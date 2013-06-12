@@ -18,13 +18,7 @@ download
 # extract files
 extract
 
-# configure
-configure
-
-# make
-make
-
-# make install
-makeinstall
-
-
+# install
+custominstall
+make install PREFIX=$LOCAL_DIR
+EOC
