@@ -1,0 +1,30 @@
+#
+# Description: mercurial
+#
+
+# source URL. It specifies where to download from.
+source=http://mercurial.selenic.com/release/mercurial-2.6.2.tar.gz
+
+# package name and version. You can omit it when it can be inferred from the source URL.
+#name=
+#ver=
+
+# URL. Just for information.
+url=http://mercurial.selenic.com/
+
+# download the package
+download
+
+# extract files
+extract
+
+# configure
+configure
+
+# make
+make
+
+# make install
+makeinstall
+
+

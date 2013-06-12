@@ -1,0 +1,35 @@
+
+#
+# Description: zsh
+#
+
+# source URL. It specifies where to download from.
+source=http://downloads.sourceforge.net/project/zsh/zsh/5.0.2/zsh-5.0.2.tar.gz
+
+# package name and version. You can omit it when it can be inferred from the source URL.
+#name=
+#ver=
+
+# URL. Just for information.
+url=http://zsh.sourceforge.net/
+
+# download the package
+download
+
+# extract files
+extract
+
+# install
+custominstall
+./Util/preconfig
+EOC
+
+# configure
+configure
+
+# make
+make
+
+# make install
+makeinstall
+
