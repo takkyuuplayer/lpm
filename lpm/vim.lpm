@@ -4,8 +4,7 @@
 #
 
 # source URL. It specifies where to download from.
-source=ftp://ftp.vim.org/pub/vim/unix/vim-7.3.tar.bz2
-topdirname=vim73
+source=hg,https://vim.googlecode.com/hg/
 
 # package name and version. You can omit it when it can be inferred from the source URL.
 #name=
@@ -16,20 +15,6 @@ url=http://www.vim.org/
 
 # download the package
 download
-
-# extract files
-extract
-
-# install
-custominstall
-rm -rf patches
-mkdir -p patches
-cd patches
-curl -O ftp://ftp.vim.org/pub/vim/patches/7.3/7.3.[001-999]
-cd ../
-cat patches/7.3.* | patch -p0
-exit 0
-EOC
 
 # configure
 configure --with-features=big --enable-multibyte --enable-pythoninterp --disable-gui --disable-selinux --without-x
