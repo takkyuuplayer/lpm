@@ -1,0 +1,24 @@
+#
+# Description: bzip2
+#
+
+# source URL. It specifies where to download from.
+source=http://www.bzip.org/1.0.6/bzip2-1.0.6.tar.gz
+
+# package name and version. You can omit it when it can be inferred from the source URL.
+#name=
+#ver=
+
+# URL. Just for information.
+url=http://www.bzip.org/
+
+# download the package
+download
+
+# extract files
+extract
+
+custominstall
+make
+make install PREFIX=$LOCAL_DIR
+EOC
