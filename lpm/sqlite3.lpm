@@ -1,0 +1,31 @@
+#
+# Description: sqlite3
+#
+
+# source URL. It specifies where to download from.
+source=http://www.sqlite.org/2013/sqlite-autoconf-3071700.tar.gz
+
+# package name and version. You can omit it when it can be inferred from the source URL.
+#name=
+#ver=
+
+# URL. Just for information.
+url=http://www.sqlite.org/
+
+# download the package
+download
+
+# extract files
+extract
+
+# configure
+configure
+
+# make
+make
+
+# make install
+makeinstall
+
+
+
