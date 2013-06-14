@@ -19,7 +19,7 @@ download
 extract
 
 # configure
-configure --without-cxx-binding  --with-shared --enable-widec
+configure
 
 # make
 make
