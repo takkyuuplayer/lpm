@@ -3,7 +3,7 @@
 #
 
 # source URL. It specifies where to download from.
-source=http://www.openssl.org/source/openssl-fips-2.0.4.tar.gz
+source=http://www.openssl.org/source/openssl-1.0.1e.tar.gz
 
 # package name and version. You can omit it when it can be inferred from the source URL.
 #name=
@@ -20,7 +20,8 @@ extract
 
 # configure
 custominstall
-./config --prefix=$LOCAL_DIR
+mv openssl-1.0.1e/* ./
+./config --prefix=$LOCAL_DIR shared
 EOC
 
 # make
