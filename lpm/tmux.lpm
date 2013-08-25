@@ -1,0 +1,30 @@
+#
+# Description: tmux
+#
+
+# source URL. It specifies where to download from.
+source=git,git://git.code.sf.net/p/tmux/tmux-code
+
+# package name and version. You can omit it when it can be inferred from the source URL.
+#name=
+#ver=
+
+# URL. Just for information.
+url=http://sourceforge.net/projects/tmux/
+
+# download the package
+download
+
+custominstall
+sh autogen.sh
+EOC
+
+# configure
+configure
+
+# make
+make
+
+# make install
+makeinstall
+
