@@ -3,7 +3,7 @@
 #
 
 # source URL. It specifies where to download from.
-source=git,git://git.code.sf.net/p/tmux/tmux-code
+source=http://downloads.sourceforge.net/tmux/tmux-1.8.tar.gz
 
 # package name and version. You can omit it when it can be inferred from the source URL.
 #name=
@@ -15,9 +15,8 @@ url=http://sourceforge.net/projects/tmux/
 # download the package
 download
 
-custominstall
-sh autogen.sh
-EOC
+# extract files
+extract
 
 # configure
 configure
