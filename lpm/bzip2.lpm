@@ -19,6 +19,8 @@ download
 extract
 
 custominstall
-make
+make -f Makefile-libbz2_so
 make install PREFIX=$LOCAL_DIR
+mv libbz2.so.* $LIB_DIR/
+ln -s libbz2.so.$PACKAGE_VER $LIB_DIR/libbz2.so
 EOC
