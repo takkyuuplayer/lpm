@@ -19,7 +19,7 @@ download
 extract
 
 # configure
-configure
+configure --with-shared
 
 # make
 make
