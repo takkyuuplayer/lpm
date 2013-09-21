@@ -18,13 +18,10 @@ download
 # extract files
 extract
 
-
-# configure
-configure
-
-# make
+custominstall
+cd libevent-$PACKAGE_VER-stable
+make clean
+./configure --prefix=$LOCAL_DIR
 make
-
-# make install
-makeinstall
-
+make install
+EOC
