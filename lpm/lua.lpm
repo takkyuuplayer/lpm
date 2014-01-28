@@ -1,0 +1,20 @@
+#
+# Description: lua
+#
+
+# source URL. It specifies where to download from.
+source=http://www.lua.org/ftp/lua-5.2.3.tar.gz
+
+# package name and version. You can omit it when it can be inferred from the source URL.
+#name=
+#ver=
+
+# URL. Just for information.
+url=http://practical-scheme.net/gauche/index.html
+
+download
+extract
+
+custominstall
+make linux test INSTALL_TOP=$LOCAL_DIR
+EOC
