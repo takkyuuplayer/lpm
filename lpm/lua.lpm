@@ -16,5 +16,5 @@ download
 extract
 
 custominstall
-make linux test INSTALL_TOP=$LOCAL_DIR
+INSTALL_TOP=$LOCAL_DIR MYCFLAGS=$CFLAGS MYLDFLAGS=$LDFLAGS make linux test
 EOC
