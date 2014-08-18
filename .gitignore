@@ -1,1 +1,3 @@
 perl/
+local/
+cpanfile.snapshot
