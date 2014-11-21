@@ -1,0 +1,27 @@
+#
+# Description: slib
+#
+
+# source URL. It specifies where to download from.
+source=http://groups.csail.mit.edu/mac/ftpdir/scm/slib-3b4.zip
+
+# package name and version. You can omit it when it can be inferred from the source URL.
+#name=
+#ver=
+
+# URL. Just for information.
+url=http://people.csail.mit.edu/jaffer/SLIB.html
+
+# download the package
+download
+
+# extract files
+extract
+
+custominstall
+cd slib
+./configure --prefix=$LPM_LOCAL
+make infoz
+make install
+EOC
+
