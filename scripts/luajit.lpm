@@ -1,0 +1,21 @@
+#
+# Description: luajit
+#
+
+# source URL. It specifies where to download from.
+source=git,http://luajit.org/git/luajit-2.0.git
+
+# package name and version. You can omit it when it can be inferred from the source URL.
+#name=
+#ver=
+
+# URL. Just for information.
+url=http://luajit.org/
+
+download
+
+make
+
+custominstall
+make install PREFIX=$LPM_LOCAL
+EOC

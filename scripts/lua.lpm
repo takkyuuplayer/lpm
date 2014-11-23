@@ -16,5 +16,6 @@ download
 extract
 
 custominstall
-INSTALL_TOP=$LOCAL_DIR MYCFLAGS=$CFLAGS MYLDFLAGS=$LDFLAGS make linux test
+INSTALL_TOP=$LPM_LOCAL MYLIBS=-lncursesw MYCFLAGS=-I$CFLAGS MYLDFLAGS=-L$LDFLAGS make linux
+make install INSTALL_TOP=$LPM_LOCAL
 EOC
