@@ -1,6 +1,5 @@
 
-#
-# Description: zsh
+# # Description: zsh
 #
 
 # source URL. It specifies where to download from.
@@ -17,7 +16,7 @@ url=http://www.vim.org/
 download
 
 # configure
-configure --with-features=big --enable-multibyte --enable-pythoninterp --disable-gui --disable-selinux --without-x
+configure --with-features=huge disable-darwin -disable-gui --disable-selinux --enable-multibyte --with-lua-prefix=$LPM_LOCAL --enable-luainterp --with-luajit --enable-fail-if-missing
 
 # make
 make
