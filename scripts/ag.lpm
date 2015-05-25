@@ -1,0 +1,24 @@
+#
+# Description: ag
+#
+
+# source URL. It specifies where to download from.
+source=git,https://github.com/ggreer/the_silver_searcher
+
+# package name and version. You can omit it when it can be inferred from the source URL.
+#name=
+#ver=
+
+# URL. Just for information.
+url=https://github.com/ggreer/the_silver_searcher
+
+# download the package
+download
+
+custominstall
+sed -i -e "s/configure/configure --prefix=\$LOCAL_DIR/g" build.sh
+echo $PWD
+./build.sh
+make install
+EOC
+
