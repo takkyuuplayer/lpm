@@ -3,7 +3,7 @@
 #
 
 # source URL. It specifies where to download from.
-source=http://prdownloads.sourceforge.net/gauche/Gauche-0.9.3.3.tgz
+source=http://prdownloads.sourceforge.net/gauche/Gauche-0.9.4.tgz
 
 # package name and version. You can omit it when it can be inferred from the source URL.
 #name=
