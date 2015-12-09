@@ -1,0 +1,3388 @@
+#!/usr/bin/env perl
+# vim: ts=4:sw=4:expandtab :
+
+use strict;
+
+### CONFIG START ###
+use constant DEFAULT_LOCAL_DIR => "lcl";
+use constant DEFAULT_BACK_UP   => 1;
+use constant ROOT_MODE         => 0;
+### CONFIG END ###
+
+use constant VERSION_STRING    => "1.65";
+use Getopt::Long;
+# use Data::Dump qw(dump);
+use File::Temp;
+use Config qw(%Config);
+use Cwd;
+
+our $debug             = 0;
+our $myself_path       = Cwd::abs_path($0);
+our $porg_base         = "http://sourceforge.net/projects/porg/files/latest/";
+our $param_local_dir   = undef;
+our $param_tar         = "tar";
+our $param_gzip        = "gzip";
+our $param_bzip2       = "bzip2";
+our $param_xz          = "xz";
+our $param_unzip       = "unzip";
+our $param_make        = "make";
+our $param_gpg         = "gpg";
+our $param_config      = undef;
+our $param_home        = $ENV{'HOME'};
+our $param_packagename = undef;
+our $flag_reset        = undef;
+our $flag_force        = 0;
+our $flag_version      = 0;
+our $flag_use_wget     = 0;
+our $flag_nouse_wget   = 0;
+our $flag_wget_nocert  = 0;
+our $flag_root         = eval "ROOT_MODE" || 0;
+our $flag_backup       = DEFAULT_BACK_UP;
+our $flag_leave_script = 0;
+
+GetOptions("debug=i"     => \$debug,
+           "porgbase=s"  => \$porg_base,
+           "local=s"     => \$param_local_dir,
+           "reset"       => \$flag_reset,
+           "force"       => \$flag_force,
+           "tar=s"       => \$param_tar,
+           "gzip=s"      => \$param_gzip,
+           "bzip=s"      => \$param_bzip2,
+           "xz=s"        => \$param_xz,
+           "unzip=s"     => \$param_unzip,
+           "make=s"      => \$param_make,
+           "gpg=s"       => \$param_gpg,
+           "config=s"    => \$param_config,
+           "home=s"      => \$param_home,
+           "name=s"      => \$param_packagename,
+           "version"     => \$flag_version,
+           "backup"      => \$flag_backup,
+           "wget"        => \$flag_use_wget,
+           "nowget"      => \$flag_nouse_wget,
+           "wnocert"     => \$flag_wget_nocert,
+           "root"        => \$flag_root,
+           "leavescript" => \$flag_leave_script,
+          );
+my $command_string = shift;
+if($flag_root) {
+    $param_home = "/usr/local";
+}
+unless(defined $param_local_dir) {
+    $param_local_dir = DEFAULT_LOCAL_DIR;
+}
+
+our $local_dir   = "$param_home/$param_local_dir";
+our $archive_dir = "$local_dir/archive";
+our $bin_dir     = "$local_dir/bin";
+our $lib_dir     = "$local_dir/lib";
+our $var_dir     = "$local_dir/var";
+our $opt_dir     = "$local_dir/opt";
+our $etc_dir     = "$local_dir/opt";
+our $share_dir   = "$local_dir/share";
+our $man_dir     = "$local_dir/share/man";
+our $build_dir   = "$local_dir/build";
+our $include_dir = "$local_dir/include";
+our $lpmlib_dir  = "$lib_dir/lpm";
+our $lpminstalllog = "$lpmlib_dir/.installlog";
+our $lpm_repo_file = "$local_dir/.lpmrepo";
+my @directories = (
+    $archive_dir,
+    $bin_dir,
+    $lib_dir,
+    $var_dir,
+    $opt_dir,
+    $etc_dir,
+    $share_dir,
+    $man_dir,
+    $build_dir,
+    $include_dir,
+    $lpmlib_dir
+);
+our %directories_env = (
+    "LPM_LOCAL"   => $local_dir,
+    "LPM_ARCHIVE" => $archive_dir,
+    "LPM_BIN"     => $bin_dir,
+    "LPM_LIB"     => $lib_dir,
+    "LPM_VAR"     => $var_dir,
+    "LPM_OPT"     => $opt_dir,
+    "LPM_ETC"     => $etc_dir,
+    "LPM_SHARE"   => $share_dir,
+    "LPM_MAN"     => $man_dir,
+    "LPM_BUILD"   => $build_dir,
+    "LPM_INCLUDE" => $include_dir,
+    "LPM_LPMLIB"  => $lpmlib_dir
+);
+our @known_shells = ('bash', 'tcsh', 'zsh');
+our $porg_path   = "$bin_dir/porg";
+if(!-x $porg_path && -x "$bin_dir/paco") {
+    $porg_path = "$bin_dir/paco";
+    print STDERR "WARNING: paco, on which LPM depends, is no longer maintanined.\n";
+    print STDERR "         We recommend you to switch to porg, which is a successor of paco.\n";
+    print STDERR "         You can upgrade to porg by 'lpm install porg'.\n";
+    print STDERR "         Note that newer version of LPM uses porg.\n";
+}
+our $package_url_path = undef;
+
+our $shellname_to_interactiveinitfile = {
+    bash => ".bashrc",
+    tcsh => ".tcshrc",
+    csh  => ".cshrc",
+    zsh  => ".zshrc"
+};
+our $shellname_to_logininitfile = {
+    bash => ".bash_profile",
+    tcsh => ".login",
+    csh  => ".login",
+    zsh  => ".zprofile"
+};
+
+if($flag_version) {
+    print STDERR "LPM version " . VERSION_STRING . "\n";
+    exit 0;
+}
+
+unless(defined $command_string) {
+    print STDERR "usage: lpm <command>\n";
+    print STDERR "    type 'lpm help' for details.\n";
+    exit 0;
+}
+
+if($command_string =~ m|^help$|) {
+    my $subarg = shift;
+    show_help($subarg);
+    exit 0;
+}
+
+if($command_string =~ m|^fix_ld_library_path$|) {
+    fix_ld_library_glitch(@ARGV);
+    exit 0;
+}
+check_ld_library_path_security_problem_and_exit_if_it_exists();
+
+if($command_string =~ m|^list$|) {
+    my $sub_arg = shift;
+    list_packages($sub_arg);
+    exit 0;
+}
+
+if($command_string =~ m|^download$|) {
+    my $sub_arg = shift;
+    download_package($sub_arg);
+    exit 0;
+}
+
+if($command_string =~ m|^uninstall$|) {
+    my $sub_arg = shift;
+    unless(defined $sub_arg) {
+        print STDERR "Uninstall what?\n";
+        print STDERR "Type 'lpm list' to show the installed packages.\n";
+        exit 1;
+    }
+    $package_url_path = $sub_arg;
+    uninstall_package($sub_arg);
+    print STDERR "Removing init scripts\n";
+    my @lpm = ("loadstartup", "delinilogin=$sub_arg", "savestartup");
+    interpret_lpm_script([], @lpm);
+    exit 0;
+}
+
+if($command_string =~ m|^ssconfig$|) {
+    # config start-up scripts
+    my $dir_name = shift;
+    unless(defined $dir_name) {
+        # list start-up script status
+        list_startup_scripts();
+        exit 0;
+    }
+    my $new_status = shift;
+    config_startup_scripts($dir_name, $new_status);
+    exit 0;
+}
+
+if($command_string =~ m|^showinstalled$|){
+    show_installed_packages();
+    exit 0;
+}
+
+if($command_string =~ m{^(fridge|refrigerator)$}) {
+    my $sub_arg = shift;
+    show_fridge($sub_arg);
+    exit 0;
+}
+
+our $arch = `arch`; chomp $arch;
+our $btype = `uname -m`; chomp $btype;
+our $bintype = simplify_btype($btype);
+our $osname = $^O;
+our $gzip_path = `which $param_gzip`;  chomp $gzip_path;
+our $is_gzip_available = -x $gzip_path;
+our $bzip_path = `which $param_bzip2`; chomp $bzip_path;
+our $is_bzip_available = -x $bzip_path;
+our $xz_path = `which $param_xz`;  chomp $xz_path;
+our $is_xz_available = -x $xz_path;
+our $tar_path  = `which $param_tar`;   chomp $tar_path;
+our $is_tar_available = -x $tar_path;
+our $unzip_path = `which $param_unzip`; chomp $unzip_path;
+our $is_unzip_available = -x $unzip_path;
+our $make_path = `which $param_make`;  chomp $make_path;
+our $is_make_available = -x $make_path;
+our $gpg_path = `which $param_gpg`; chomp $gpg_path;
+our $is_gpg_available = -x $gpg_path;
+our $dist_info = get_distribution_info();
+our $wget_path = `which wget`; chomp $wget_path;
+our $is_wget_available = -x $wget_path;
+
+print "\n";
+print "Local Package Manager (LPM) version " . VERSION_STRING . "\nCopyright by Masahiro Kasahara\n\n";
+print "  arch  = $arch ($btype)\n";
+print "  tar   = " . ($is_tar_available   ? "available (path = $tar_path)"   : 'not available') . "\n";
+print "  gzip  = " . ($is_gzip_available  ? "available (path = $gzip_path)"  : 'not available') . "\n";
+print "  bzip  = " . ($is_bzip_available  ? "available (path = $bzip_path)"  : 'not available') . "\n";
+print "  unzip = " . ($is_unzip_available ? "available (path = $unzip_path)" : 'not available') . "\n";
+print "  xz    = " . ($is_xz_available    ? "available (path = $xz_path)"    : 'not available') . "\n";
+print "  make  = " . ($is_make_available  ? "available (path = $make_path)"  : 'not available') . "\n";
+print "  gpg   = " . ($is_gpg_available   ? "available (path = $gpg_path)"   : 'not available') . "\n";
+print "  wget  = " . ($is_wget_available  ? "available (path = $wget_path)"  : 'not available') . "\n";
+print "  os    = " . $dist_info->{description} . "\n";
+print "\n";
+
+unless($is_tar_available) {
+    print STDERR "tar is required. Please make sure that tar is on PATH.\n";
+    print STDERR "You can use -tar=xxx option to specify a specific tar.\n";
+    exit 0;
+}
+unless($is_make_available) {
+    print STDERR "make is required. Please make sure that make is on PATH.\n";
+    print STDERR "You can use -make=xxx option to specify a specific make.\n";
+    exit 0;
+}
+
+ensure_that_compiler_is_available();
+
+if($command_string =~ m|^extract$|) {
+    my $sub_arg = shift;
+    extract_package($sub_arg);
+    exit 0;
+}
+
+if($command_string =~ m|^update$|) {
+    $package_url_path = shift;
+    my @porg_result = get_matching_porg_packages_already_installed($package_url_path);
+    if(1 < @porg_result) {
+        print STDERR "ERROR: There are multiple packages matching to '$package_url_path'. The candidates are:\n";
+        for(@porg_result) { print "\t$_\n"; }
+        exit 1;
+    } elsif(@porg_result == 0) {
+        print STDERR "ERROR: No such package '$package_url_path'\n";
+        exit 1;
+    }
+    my $full_package_name = $porg_result[0];
+    print "Freezing $full_package_name for (possible) roll back...\n";
+    my $freeze_result = freeze_package($full_package_name, 1); # ,1 means return on overwriting
+    if($freeze_result == 0) {
+        print "The freezed binary already exists, so freezing skipped.\n";
+    } else {
+        print "Successfully freezed $full_package_name.\n";
+    }
+    print "Uninstalling $full_package_name...\n";
+    uninstall_package($full_package_name);
+    print "Installing $package_url_path...\n";
+    install_package($package_url_path, \@ARGV);
+    exit 0;
+}
+
+if($command_string =~ m|^install$|) {
+    my $sub_arg = shift;
+    unless(defined $sub_arg) {
+        print STDERR "The argument is missing.\n\n";
+        print STDERR "Usage 1: lpm install <package name>\n";
+        print STDERR "         Install a package from repositories specified in $local_dir/.lpmrepo\n";
+        print STDERR "Usage 2: lpm install <LPM script file name>\n";
+        print STDERR "         Install a package using the specified LPM script\n";
+        print STDERR "Usage 3: lpm install <URL for downloading LPM script>\n";
+        print STDERR "         Install a package using the LPM script downloaded from the specified URL\n";
+        print STDERR "Usage 4: lpm install <tar ball file name>\n";
+        print STDERR "         Install a package using the specified tar ball\n";
+        print STDERR "Usage 5: lpm install <URL for downloading tar ball>\n";
+        print STDERR "         Install a package from the specified URL\n";
+        exit 1;
+    }
+    $package_url_path = $sub_arg;
+    unless($flag_force) {
+        my @porg_result = get_matching_porg_packages_already_installed($package_url_path);
+        if(0 < @porg_result) {
+            print STDERR "ERROR: Package '$package_url_path' is already installed. Here is candidate(s):\n";
+            for(@porg_result) { print STDERR "\t$_\n"; }
+            print STDERR "INFO: You can type 'lpm update $package_url_path' if you intended to update it.\n";
+            print STDERR "      You can ignore this error by adding --force option. If you do so, you will\n";
+            print STDERR "      probably end up in seeing duplicated packages in the database.\n";
+            exit 1;
+        }
+    }
+    install_package($sub_arg, \@ARGV);
+    exit 0;
+}
+
+if($command_string =~ m|^manualinstall$|) {
+    manual_install_package(\@ARGV);
+    exit 0;
+}
+
+if($command_string =~ m|^lpm$|) {
+    my $sub_arg = shift;
+    my @lpm = split(/;/, $sub_arg);
+    interpret_lpm_script([], @lpm);
+    exit 0;
+}
+
+if($command_string =~ m|^sourceforge$|) {
+    my $project_name = shift;
+    my $package_name = shift;
+    my $subdir_if_any = shift;
+    $package_name = $project_name unless(defined $package_name);
+    my @lpm = ("getlatest " . $package_name . " http://sourceforge.net/projects/" . $project_name . "/files/$subdir_if_any",
+               "download", "extract", "configure", "make", "makeinstall");
+    interpret_lpm_script([], @lpm);
+    exit 0;
+}
+
+if($command_string =~ m|^initcpan$|) {
+    init_cpan();
+    exit 0;
+}
+
+if($command_string =~ m|^installcpan$|) {
+    my $sub_arg = shift;
+    install_cpan($sub_arg);
+    exit 0;
+}
+
+if($command_string =~ m|^removelocaldir$|) {
+    # uninstall
+    unless(-e $local_dir) {
+        print "There is no local directory '$local_dir'. Abort.\n";
+        exit 0;
+    }
+    remove_local_dir();
+    remove_startup_scripts();
+    exit 0;
+}
+
+if($command_string =~ m{^update(lpm|self|lpmdevel)$}) {
+    # update lpm myself
+    update_lpm($1);
+    exit 0;
+}
+
+if($command_string =~ m|^listrepos$|) {
+    list_repository();
+    exit 0;
+}
+
+if($command_string =~ m|^freeze$|) {
+    my $sub_arg = shift;
+    freeze_package($sub_arg);
+    exit 0;
+}
+
+if($command_string =~ m|^thaw$|) {
+    my $sub_arg = shift;
+    thaw_package($sub_arg);
+    exit 0;
+}
+
+unless($command_string =~ m|^init(local(dir))?$|) {
+    print STDERR "Unknown command '$command_string'\n";
+    if($command_string =~ m|\.lpm$|) {
+        print STDERR "Maybe '$0 install $command_string'?\n";
+        exit 1;
+    }
+    print STDERR "Use $0 help to show available commands.\n";
+    exit 1;
+}
+
+# do init
+if($ENV{'USER'} eq 'root' && !$flag_root) {
+    unless($flag_force) {
+        print STDERR "ERROR: you need --root option when you run LPM by root user.\n";
+        print STDERR "       --root will install packages under /usr/local\n";
+        exit 1;
+    } else {
+        print STDERR "INFO: you specified --force, so we run LPM in user mode.\n";
+    }
+}
+if(-e $local_dir && !$flag_reset) {
+    print "The local directory '$local_dir' already exists.\n";
+    print "Please add -reset option if you intended to overwrite the existing local directory.\n";
+    exit 1;
+}
+
+print "checking whether C/C++ compiler exists in the system ... ";
+{
+    my $stop_because_of_error = 0;
+    my $cc = `which cc`;           chomp $cc;
+    my $gcc = `which gcc`;         chomp $gcc;
+    my $ucc = defined $ENV{'CC'} ? `which $ENV{'CC'}` : undef;  chomp $ucc;
+    if(!-x $cc && !-x $gcc && !-x $ucc) {
+        print STDERR "no\nERROR: Could not find C compiler.\n";
+        print STDERR "       Please install C compiler.\n";
+        if($^O =~ /darwin/) {
+            print STDERR "       We recommend that you install Xcode from App Store.\n";
+            print STDERR "       If you personally do not use Xcode, 'Xcode Command Line Tools',\n";
+            print STDERR "       might be your choice since it is much smaller than full-featured\n";
+            print STDERR "       Xcode although everything needed for command line build is included.\n";
+        }
+        $stop_because_of_error = 1;
+    }
+    my $cpp = `which c++`;         chomp $cpp;
+    my $gpp = `which g++`;         chomp $gpp;
+    my $upp = defined $ENV{'CXX'} ? `which $ENV{'CXX'}` : undef; chomp $upp;
+    if(!-x $cpp && !-x $gpp && !-x $upp) {
+        print STDERR "no\nERROR: Could not find C++ compiler.\n";
+        print STDERR "       Please install C compiler.\n";
+        $stop_because_of_error = 1;
+    }
+    if($stop_because_of_error) {
+        print STDERR "no\n       LPM would not work without C/C++ compilers.\n";
+        print STDERR "       If you believe C/C++ compilers are available,\n";
+        print STDERR "       please set CC (for C compiler) and CXX (for C++ compiler)\n";
+        print STDERR "       environment variables. (e.g., export CC=/opt/gcc/bin/gcc)\n";
+        exit 1;
+    }
+}
+print "yes\n";
+
+print "checking the latest version of porg ... ";
+my $porg_download;
+unless(-e $porg_base) {
+    $porg_download = sourceforge_net_download_latest($porg_base);
+    if($porg_download->{error}) {
+        print "ERROR: $porg_download->{error}\n";
+        print "INFO: If your firewall does not allow you to connect to the Internet,\n";
+        print "      you can copy the tarball of porg manually and give the path of.\n";
+        print "      the tarball by --porgbase option.\n";
+        print "          e.g.) lpm initlocaldir --porgbase=/tmp/porg-0.2.0.tar.gz\n";
+        print "      For your information, the web page of porg is\n";
+        print "          http://porg.sourceforge.net/\n";
+        exit 2;
+    }
+    print "Detected version: $porg_download->{ver}\n";
+    # dump($porg_download->{package});
+} else {
+    print "INFO: You specified the tarball path of porg ($porg_base), so we skipped downloading it.\n";
+}
+
+print "creating local directory ($local_dir) ... ";
+if(-e $local_dir && $flag_reset) {
+    remove_local_dir();
+}
+if(-e $local_dir) {
+    print "use the existing directory.\n";
+} else {
+    mkdir $local_dir or die "failed to mkdir '$local_dir'";
+    print "\n";
+}
+for my $dir (@directories) {
+    print "creating $dir ... ";
+    if(-e $dir) {
+        print "use the existing directory.\n";
+    } else {
+        mkdir $dir or die "failed to mkdir '$dir'";
+        print "\n";
+    }
+}
+print "downloading the latest porg ...";
+{
+    my $porg_file;
+    unless(-e $porg_base) {
+        $porg_file = "$archive_dir/$porg_download->{fname}";
+        open FH, ">", $porg_file or die "Cannot open '$porg_file' for saving porg";
+        print FH $porg_download->{content};
+        close FH;
+        print " done\n";
+    } else {
+        $porg_file = $porg_base;
+    }
+    do_gnu_build($porg_file, "--disable-grop --with-porg-logdir=$var_dir/log");
+    `perl -ple 'if(/^install-exec-local:/){ print "install-exec-local:\n\n"; \$_ = "old-install-exec-local:" }' -i scripts/Makefile`;
+    do_make_install();
+    my $save_path = $ENV{'PATH'};
+    $ENV{'PATH'} = "${bin_dir}:$save_path";
+    do_shell("$make_path logme");
+    $ENV{'PATH'} = $save_path;
+}
+print "setting up scripts to set environment variables ...";
+{
+    my $prefix_envs = {
+        PATH    => $bin_dir,
+        MANPATH => $man_dir,
+        LD_LIBRARY_PATH => "${lib_dir}64:${lib_dir}"
+    };
+    my $suffix_envs = {
+    };
+    my $shellname_to_packagename_to_interactiveinit = {
+        bash => { '0' => [] },
+        tcsh => { '0' => [] },
+        zsh  => { '0' => [] }
+    };
+    my $shellname_to_packagename_to_logininit = {
+        bash => { '0' => ["source $local_dir/.bashrc"] },
+        tcsh => { '0' => [] },
+        zsh  => { '0' => [] }
+    };
+    if(defined $param_config) {
+        my $fh;
+        open $fh, "<", $param_config or die "Cannot open '$param_config'";
+        my @texts;
+        while(<$fh>) {
+            chomp; chop if(/\r$/); # for windows text
+            push(@texts, $_);
+        }
+        close $fh;
+        my $eval_str = join("\n", @texts);
+        eval $eval_str;
+        if($?) {
+            print "Config file '$param_config' has an error:\n$?\n";
+            exit 6;
+        }
+    }
+    # set up from $previx_envs/$suffix_envs
+    for my $shell ( @known_shells ) {
+        my $header = "#### LPM($local_dir): 0";
+        unshift(@{$shellname_to_packagename_to_logininit->{$shell}->{0}}, $header);
+        unshift(@{$shellname_to_packagename_to_interactiveinit->{$shell}->{0}}, $header);
+    }
+    for my $env_name (keys %{$prefix_envs}) {
+        my $value = $prefix_envs->{$env_name};
+        push(@{$shellname_to_packagename_to_interactiveinit->{bash}->{0}}, "export $env_name=${value}\${$env_name:+:\$$env_name}");
+        push(@{$shellname_to_packagename_to_interactiveinit->{zsh} ->{0}}, "export $env_name=${value}\${$env_name:+:\$$env_name}");
+        my $tcsh_manpath_hack = ($env_name eq "MANPATH") ? ":" : ""; # see interpret_lpm_script/setini for the reason
+        push(@{$shellname_to_packagename_to_interactiveinit->{tcsh}->{0}}, "if (\$?$env_name) then\n  setenv $env_name ${value}:\$$env_name\nelse\n  setenv $env_name ${value}$tcsh_manpath_hack\nendif\n");
+    }
+    for my $env_name (keys %{$suffix_envs}) {
+        my $value = $suffix_envs->{$env_name};
+        push(@{$shellname_to_packagename_to_interactiveinit->{bash}->{0}}, "export $env_name=\${$env_name:+\$$env_name:}${value}");
+        push(@{$shellname_to_packagename_to_interactiveinit->{zsh} ->{0}}, "export $env_name=\${$env_name:+\$$env_name:}${value}");
+        push(@{$shellname_to_packagename_to_interactiveinit->{tcsh}->{0}}, "if (\$?$env_name) then\n  setenv $env_name ${env_name}:\$$value\nelse\n  setenv $env_name ${value}\nendif\n");
+    }
+    while(my ($key, $val) = each %directories_env) {
+        push(@{$shellname_to_packagename_to_interactiveinit->{bash}->{0}}, "export $key=$val");
+        push(@{$shellname_to_packagename_to_interactiveinit->{zsh} ->{0}}, "export $key=$val");
+        push(@{$shellname_to_packagename_to_interactiveinit->{tcsh}->{0}}, "setenv $key $val");
+    }
+    save_initial_script_files($shellname_to_packagename_to_interactiveinit, $shellname_to_packagename_to_logininit);
+    print " done.\n";
+}
+print "extracting public keys ...\n";
+# making lpmlib_dir invisible to others,
+# unless otherwise GnuPG would complain that it's not secure.
+unless(chmod 0700, $lpmlib_dir) {
+    print STDERR "WARNING: Failed to chmod $lpmlib_dir\n";
+    print STDERR "         This may cause no problem, but you will see warning messages from GnuPG when installing packages.\n";
+    print STDERR "         To supress the warning, do chmod to make $lpmlib_dir unreadable to other users.\n";
+}
+if(chdir $lpmlib_dir) {
+    if(open FH, ">keyrings.tar.gz") {
+        binmode FH;
+        print FH unpack("u", << 'EOF');
+M'XL(`.$)?TP``^W6>324:Q@`\&\6V^#:1\DPB:P5,V,&J2F7,B+JJ&0?3/:A
+M&7--USHTEI*T:"(T#;*3_8JD<LJ2-"UN&XXEW4:*=#DRZ4YUNG7_Z)S^B7,[
+MW^^?]UN>\[WO>9_G?,\;SO"A!5+]U_J'^P,_BK$('H<3C5@,%D\0C1@<'F?\
+M\;D(!H,E`"8F."P!;XS%8D3O33"F!!,`;?S#5O05!CV"3$.C@5`RC2':B6_&
+M!?C[&N--\8NQI,64!>'![>/@Y@IPH!K)YJN]6/[\&;-3YWZQ)((G-V+HDJPC
+MM"^[W%#=G#YUAVD^%>]!*@@UU&/SWU<5$?HJ6BEW)7MC;Q$6K'-T(KJI-K$W
+M'_VN=='4,]E\CC&U.=XR4E!"=6ZJ)F,<?GV@^;PP\_@^S7?S'H/])$5<:E#-
+M,K?Z2Y"1RT6](X(LUX1K`+<;D=<5E55K:L,\E:?IN8.HU6_D!GOO[E%:0)SF
+M;'F2D4J)62XL'"_'/Y3-5J("(\.D#;W5PYW8L<-`6]8R_%B65PA]_(#1O86V
+M=-Q?S.3QH(HRK*[XY+[-8F;64B[VI&@D'GDBP6\#7_"2G=;8_XN/MZ,4RG.R
+MA"_)1W)\[OD)'(213Y`"_Z1HJ\I:N;@!RXY.8H8!'$A[.Z%C)?L\4:$9>:;0
+MU<(-:KVF<:6,1DG!5LQ,<94@.[_RY-DW6_XX-<'N>;Q19?BIKU'`V8O-LBD7
+MMPFWI[08^,^;MS;;W8ANLI:HV-W_AI^QZORCU)N%)Q6.YPH)\5/)PZ-KSK,!
+MG(QNTC8577Z=^EB($)+WI$PQN&\4P9X+RYZIP]H[.:##R;[!9'\*6N_#32@Y
+MD(JF4<+#Z($18;0#^FC+D/#03<%D.CF`3".OC:1O3/&&*RE``;08]$-^H2M@
+MXM)2DA(P*%P%*@F#(Z$P"%0#`E6-!Q!2\H#%)<5T?`+%[S*0ISNB.][=H'I4
+M)[L3P7)&--V8",D%N"VU_1Z79@Z:M'8X5/EZMS$,[W>=NP`%8$U0V8_U(R\)
+M</=KJ\[GSU3LF1P1-L0,SKXNE;*(H0]IC1G5&@9TJ\VFTZ).7Y@IL*V^-VP4
+MXZP.'!+//3($_!9'S2T?C[U:8ENW\UG%G'-LH9XV(R<DM.3<?H/UQ>DYTI%'
+M!EL#4Q0J],/T)9*P+@=JSK($MS@XJ-[X`Y3<]$P/5FBIKZK@))CPFH4WC8JG
+M88%CG$Q'I;RT!H$BI?X$Z2"J_$_$WNMQ=E[N/,?PE+MP6RMY<IO;7*+6WD0,
+MTCU_L*<PD4ESK'%?D8GBEG"K'JXS,[3#39:C'J+_7M@.L\J=Z6G5%/:LGCA2
+M4\_4#Q[Q5#XM=!LRVX/J3*A/&MC-A!X+.7P7R6<0`9B8Q/NP*ZLU!.X.CHU'
+M4ZF[6G@\N]S*=U')L#MJ[<.[2F$Q6MC="TY2XZ^ES>[4,$P<QF_K!^_JE>/Y
+M>`VO.*DX:5!QN(LH9YW7_6)]GVWKS"OVVVB.;OM;B@LK4KF:S\W8RM,.TVOI
+MB]G[:"5K)Q#4VF"S\9D&(J0YM^,0)REC8)6U'(G8YGZE7W#="34]>+.@R/4I
+MYO;:++O2'9R7ZO%>)SC$I.K9C/;P;%<[*3YQ9_HZEKIR\1G"*(KD=Y]EL\9K
+M_HV/]-#"*K4S\_%P%0X3*`9<@J:O'NWTJ=>J2BAZW.R;E]%@0%6&6&32`BO-
+ME#;!XUBO5FHVME\7[L\+\:*RF*B.%!)\F:CJI#Y7G<S7Y34P!^3(.BD6KMO0
+MU%8"E(T@MD:39$R4Y0%NSK'M[QXS,[6]\W%*!@L$VH/PA:@/Y;74O\>?'IWB
+MN]3]_X,O_1]K_+'_8\'^OR@B:*(-\/-9TO,?[C_Y-_ET_C,%\[\8(*+$PV`0
+M,8CHVCY.3/BM,,1W?@^,`^-^VCB-)9H7C/N7#%`QF;^-'A2MH%?)S?I\L!3_
+M]%+S2YPLD-/=Q:N;<!]PC763&..'$<54V-?$OW,6$`@$`H%`(!`(!`*!0"`0
+0"`0"@?[?_@'T0$XU`"@`````
+`
+end
+EOF
+#` #' #" # hack for old emacs (buggy) syntax coloring (Thanks to S. Sakuraba)
+        close FH;
+        system "cat keyrings.tar.gz | tar xvz";
+        if($?) {
+            print STDERR "ERROR: keyring extraction failed. installation may be incomplete.\n";
+        }
+    }
+} else {
+    print STDERR "ERROR: could not place keyrings.\n";
+}
+
+print "setting up default repository ...\n";
+{
+    my $fh;
+    if(open $fh, ">", "$local_dir/.lpmrepo") {
+        print $fh "# List repository URLs below\n";
+        print $fh "http://www.kasahara.ws/lpm/repository/\n";
+        close $fh;
+    }
+    print "\tYou can add (possibly your own) repositories to $local_dir/.lpmrepo\n";
+}
+
+print "shell-dependent set up ...\n";
+{
+    if(!defined $param_home || $param_home eq '' || !-e $param_home) {
+        print STDERR "Your home directory ($param_home) seems incorrect. Abort.\n";
+        exit 8;
+    }
+    add_startup_scripts();
+}
+print "install myself to the local directory\n";
+{
+    my $package_option = "--package=lpm-" . VERSION_STRING;
+    do_shell("$bin_dir/porg $package_option -l /bin/cp $myself_path $bin_dir/lpm");
+    chmod(0755, "$bin_dir/lpm");
+}
+if($param_local_dir ne DEFAULT_LOCAL_DIR) {
+    print "update the default local directory.\n";
+    do_shell("perl -pe 's|((use\\s+constant\\s+DEFAULT_LOCAL_DIR\\s*=>).*;)|\$2 \"$param_local_dir\";|' -i $bin_dir/lpm");
+}
+if($flag_root) {
+    do_shell("perl -pe 's|((use\\s+constant\\s+ROOT_MODE\\s*=>).*;)|\$2 1;|' -i $bin_dir/lpm");
+    print "\n\nCongratulations! LPM successfully initialized the local directory ($param_local_dir) (ROOT_MODE)\n";
+} else {
+    print "\n\nCongratulations! LPM successfully initialized the local directory ($param_local_dir)\n";
+}
+print "We recommend you to relogin, or just type 'exec \$SHELL -l' to reload the login script.\n";
+print "If you are going to install libraries locally (under $param_local_dir),\n";
+print "you would probably want compilers to refer to the library directory under $param_local_dir\n";
+print "Then you should type 'lpm install compiler-envs' after the first relogin, and then relogin again.\n";
+print "You would see that CFLAGS, LDFLAGS, etc. are properly set up.\n";
+print "If you install Java libraries by LPM, you need to have CLASSPATH set up properly.\n";
+print "Type 'lpm install javalib' if needed.\n";
+
+sub read_blocks_from_file
+{
+    my ($fname, $blocks) = @_;
+    my $fh;
+    if(open $fh, "<", $fname) {
+        my $block_name = '';
+        while(<$fh>) {
+            chomp;
+            if(/^####\s+LPM\([^\)]+\): (.*)$/) {
+                $block_name = $1;
+                print STDERR "   Found block $block_name\n" if($debug > 1);
+                $blocks->{$block_name} = [];
+            }
+            if(defined $block_name) {
+                push(@{$blocks->{$block_name}}, $_);
+            }
+        }
+        close $fh;
+        return 1;
+    }
+    return undef;
+}
+
+sub load_initial_script_files
+{
+    my ($interactive, $login) = @_;
+    for my $shell_name ( @known_shells ) {
+        print "  loadini ($shell_name)\n" if($debug > 1);
+        # set interactives
+        $interactive->{$shell_name} = {};
+        my $interactive_init_file = $shellname_to_interactiveinitfile->{$shell_name};
+        print "     interactive ($interactive_init_file)\n" if($debug > 1);
+        unless(read_blocks_from_file("$local_dir/$interactive_init_file", $interactive->{$shell_name})) {
+            if(-e $interactive_init_file) {
+                die "Cannot open '$interactive_init_file'";
+            }
+        }
+        # set logins
+        $login->{$shell_name} = {};
+        my $login_init_file       = $shellname_to_logininitfile->{$shell_name};
+        print "     login ($login_init_file)\n" if($debug > 1);
+        unless(read_blocks_from_file("$local_dir/$login_init_file",       $login->{$shell_name})) {
+            if(-e $login_init_file) {
+                die "Cannot open '$login_init_file'";
+            }
+        }
+    }
+}
+
+sub save_initial_script_files
+{
+    my ($interactive, $login) = @_;
+    my $fh;
+    for my $shell_name ( @known_shells ) {
+        print "  saveini ($shell_name)\n" if($debug > 1);
+        my $interactive_init_file = $shellname_to_interactiveinitfile->{$shell_name};
+        my $int_path = "$local_dir/$interactive_init_file";
+        my $int_tmp_path = "$int_path.tmp";
+        open $fh, ">", $int_tmp_path or die "Cannot open $int_tmp_path";
+        print "  opened '$int_tmp_path'\n" if($debug > 1);
+        for my $block_name ( sort keys %{$interactive->{$shell_name}} ) {
+            my $lines = $interactive->{$shell_name}->{$block_name};
+            for my $line (@{$lines}) {
+                print $fh "$line\n";
+                print "$line\n" if($debug > 2);
+            }
+        }
+        close $fh;
+        print "  closed '$int_tmp_path'\n" if($debug > 1);
+        print "  renaming '$int_tmp_path' to '$int_path'\n" if($debug > 1);
+        rename($int_tmp_path, $int_path) or die "Cannot rename $int_tmp_path to $int_path";
+
+        my $login_init_file = $shellname_to_logininitfile->{$shell_name};
+        my $login_path = "$local_dir/$login_init_file";
+        my $login_tmp_path = "$login_path.tmp";
+        open $fh, ">", $login_tmp_path or die "Cannot open $login_tmp_path";
+        print "  opened '$login_tmp_path'\n" if($debug > 1);
+        for my $block_name ( sort keys %{$login->{$shell_name}} ) {
+            my $lines = $login->{$shell_name}->{$block_name};
+            for my $line (@{$lines}) {
+                print $fh "$line\n";
+                print "$line\n" if($debug > 2);
+            }
+        }
+        close $fh;
+        print "  closed '$login_tmp_path'\n" if($debug > 1);
+        print "  renaming '$login_tmp_path' to '$login_path'\n" if($debug > 1);
+        rename($login_tmp_path, $login_path) or die "Cannot rename $login_tmp_path to $login_path";
+    }
+}
+
+sub print_warning_message_if_using_unknown_shell
+{
+    my $shell_name = shift;
+    if($shell_name =~ /^zsh/i) {
+        print "You seem to use zsh for your login shell.\n" if($debug > 0);
+    } elsif($shell_name =~ /^tcsh/i) {
+        print "You seem to use tcsh for your login shell.\n" if($debug > 0);
+    } elsif($shell_name =~ /^bash/i) {
+        print "You seem to use bash for your login shell.\n" if($debug > 0);
+    } else {
+        print "Your shell '$shell_name' is unknown to me.\n";
+        print "You have to manually source the initial scripts.\n";
+    }
+}
+
+sub add_startup_scripts
+{
+    my $shell_name = get_file_name_from_path($ENV{'SHELL'});
+    print_warning_message_if_using_unknown_shell($shell_name);
+    if($flag_root) {
+        if($dist_info->{type} eq 'rhel') {
+            open my $bfh, ">", "/etc/profile.d/lpm.sh" or die;
+            print $bfh "# init script for LPM\n";
+            print $bfh "source $local_dir/$shellname_to_interactiveinitfile->{'bash'}\n";
+            print $bfh "source $local_dir/$shellname_to_logininitfile->{'bash'}\n";
+            close $bfh;
+            open my $cfh, ">", "/etc/profile.d/lpm.csh" or die;
+            print $cfh "# init script for LPM\n";
+            print $cfh "source $local_dir/$shellname_to_interactiveinitfile->{'csh'}\n";
+            print $cfh "source $local_dir/$shellname_to_logininitfile->{'csh'}\n";
+            close $cfh;
+        } else {
+            print "ERROR: $dist_info->{description} is not supported (yet) on root mode.\n";
+            print "       You have to manually set up initializing scripts so that they\n";
+            print "       source $local_dir/$shellname_to_interactiveinitfile->{'bash'},\n";
+            print "       $local_dir/$shellname_to_logininitfile->{'bash'} for bash/zsh,\n";
+            print "       $local_dir/$shellname_to_interactiveinitfile->{'csh'}, and\n";
+            print "       $local_dir/$shellname_to_logininitfile->{'csh'} for csh/tcsh.\n";
+        }
+        return;
+    }
+    # user mode
+    for my $shell ( @known_shells ) {
+        my $interactive_init_file = $shellname_to_interactiveinitfile->{$shell};
+        my $login_init_file       = $shellname_to_logininitfile->{$shell};
+        add_if_not_exist("$param_home/$interactive_init_file", "source $local_dir/$interactive_init_file");
+        add_if_not_exist("$param_home/$login_init_file"      , "source $local_dir/$login_init_file");
+    }
+}
+
+sub remove_startup_scripts
+{
+    my $shell_name = get_file_name_from_path($ENV{'SHELL'});
+    print_warning_message_if_using_unknown_shell($shell_name);
+    if($flag_root) {
+        if($dist_info->{type} eq 'rhel') {
+            unless(unlink "/etc/profile.d/lpm.sh") {
+                print STDERR "WARNING: /etc/profile.d/lpm.sh could not be removed.\n";
+            }
+            unless(unlink "/etc/profile.d/lpm.csh") {
+                print STDERR "WARNING: /etc/profile.d/lpm.csh could not be removed.\n";
+            }
+        } else {
+            print "ERROR: $dist_info->{description} is not supported (yet) on root mode.\n";
+            print "       You have to remove initializing scripts manually.\n";
+        }
+        return;
+    }
+    # user mode
+    for my $shell ( @known_shells ) {
+        my $interactive_init_file = $shellname_to_interactiveinitfile->{$shell};
+        my $login_init_file       = $shellname_to_logininitfile->{$shell};
+        remove_if_exist("$param_home/$interactive_init_file");
+        remove_if_exist("$param_home/$login_init_file"      );
+    }
+}
+
+sub get_startup_script_status
+{
+    my $shell_name = get_file_name_from_path($ENV{'SHELL'});
+    print_warning_message_if_using_unknown_shell($shell_name);
+    my $interactive_init_file = $shellname_to_interactiveinitfile->{$shell_name};
+    my %block_name_2_suppressed;
+    my $fh;
+    my $startup_script_path = "$param_home/$interactive_init_file";
+    open $fh, "<", $startup_script_path or die "Cannot open '$startup_script_path'";
+    my $block_name = undef;
+    while(<$fh>) {
+        chomp;
+        next if($_ =~ m|^\s*$|);
+        if(m|^#### LPM\((.*)\)|){
+            $block_name = $1;
+            my $next_line = <$fh>;
+            if($next_line =~ m|^#|) {
+                $block_name_2_suppressed{$block_name} = 1;
+            } else {
+                $block_name_2_suppressed{$block_name} = 0;
+            }
+        }
+    }
+    close $fh;
+    return %block_name_2_suppressed;
+}
+
+sub list_startup_scripts
+{
+    my %block_name_2_suppressed = get_startup_script_status();
+    print "local directory              status\n";
+    print "===================================";
+    for my $k (sort keys %block_name_2_suppressed) {
+        print (sprintf("\n%-29s", $k));
+        if($block_name_2_suppressed{$k}) {
+            print "off";
+        } else {
+            print "on";
+        }
+    }
+    print "\n";
+}
+
+sub config_startup_scripts_one_file
+{
+    my ($file_name, $change_block_name, $change_level) = @_;
+    die "Logic error." if($change_level == 0);
+    my $tmp_file_name = "$file_name.tmp";
+    my ($ifh, $ofh);
+    open $ifh, "<", $file_name or die "Cannot open '$file_name' for input";
+    open $ofh, ">", $tmp_file_name  or die "Cannot open '$tmp_file_name' for output";
+    my $block_name = undef;
+    my @block_lines = ();
+    my $change_comment_level = 0;
+    while(<$ifh>) {
+        if(m|^# DO NOT EDIT THE FOLLOWING TWO LINES|) {
+            print $ofh $_;
+            next;
+        }
+        if(m|^#### LPM\((.*)\)|){
+            $block_name = $1;
+            print $ofh $_;
+            next;
+        }
+        if($block_name ne $change_block_name) {
+            print $ofh $_;
+            $block_name = undef;
+            next;
+        }
+        if($change_level > 0) {
+            print $ofh "#"x$change_level;
+            print $ofh $_;
+        } else {
+            print $ofh substr($_, -$change_level);
+        }
+        $block_name = undef;
+    }
+    close $ofh or die "Cannot close '$tmp_file_name'. Strange, hmm.";
+    close $ifh or die "Cannot close '$file_name'. Strange, hmm.";
+
+    print STDERR "Rename $tmp_file_name to $file_name\n" if($debug > 0);
+    my $old_file_name = "$file_name.old.$$";
+    if($flag_backup) {
+        unless(rename ($file_name, $old_file_name)) {
+            die "    Cannot rename '$file_name' to '$old_file_name'";
+        }
+    }
+    unless(rename ($tmp_file_name, $file_name)) {
+        if($flag_backup) {
+            unless(rename ($old_file_name, $file_name)) {
+                print STDERR "    ERROR: Cannot rename '$tmp_file_name' to '$file_name'\n";
+                print STDERR "           The original '$file_name' was already renamed to '$tmp_file_name'.\n";
+                die;
+            }
+            die "Cannot rename '$tmp_file_name' to '$file_name', but the original '$file_name' was restored.";
+        }
+    }
+}
+
+sub config_startup_scripts
+{
+    my ($local_dir_mnemonic, $changed_status) = @_;
+    if($changed_status ne 'on' && $changed_status ne 'off') {
+        print STDERR "ERROR: status must be either 'on' or 'off'.\n";
+        print STDERR "       I do not understand '$changed_status'.\n";
+        exit 1;
+    }
+    my %block_name_2_suppressed = get_startup_script_status();
+    my $selected_key_name = undef;
+    my $full_match = 0;
+    my $number_of_matched_blocks = 0;
+    for my $k (keys %block_name_2_suppressed) {
+        if($k =~ m|/$local_dir_mnemonic$|) {
+            $selected_key_name = $k;
+            $full_match = 1;
+            $number_of_matched_blocks = 1;
+            last;
+        }
+        if($k =~ m|$local_dir_mnemonic|) {
+            $number_of_matched_blocks++;
+            $selected_key_name = $k;
+        }
+    }
+    if($number_of_matched_blocks <= 0) {
+        print STDERR "ERROR: no local directory matched to '$local_dir_mnemonic'.\n";
+        print STDERR "       '$0 ssconfig' to show the list of the local directories.\n";
+        exit 1;
+    }
+    print STDERR "Use '$selected_key_name'\n" if($debug > 0);
+    if($block_name_2_suppressed{$selected_key_name} && $changed_status eq 'off') {
+        print STDERR "$selected_key_name is already turned off.\n";
+        exit 0;
+    }
+    if(!$block_name_2_suppressed{$selected_key_name} && $changed_status eq 'on') {
+        print STDERR "$selected_key_name is already turned on.\n";
+        exit 0;
+    }
+    my $comment_level_change;
+    $comment_level_change = -1 if($changed_status eq 'on');
+    $comment_level_change =  1 if($changed_status eq 'off');
+    for my $shell ( @known_shells ) {
+        my $interactive_init_file = $shellname_to_interactiveinitfile->{$shell};
+        my $login_init_file       = $shellname_to_logininitfile->{$shell};
+        config_startup_scripts_one_file("$param_home/$interactive_init_file", $selected_key_name, $comment_level_change);
+        config_startup_scripts_one_file("$param_home/$login_init_file"      , $selected_key_name, $comment_level_change);
+    }
+    print STDERR "Start-up scripts are successfully edited.\n";
+    print STDERR "You may want to relogin to reflect the changes.\n";
+    print STDERR "Alternatively, you can do the following:\n";
+    print STDERR "    \$ exec " . $ENV{'SHELL'} . " -l\n";
+}
+
+sub add_if_not_exist
+{
+    my ($init_file, $line) = @_;
+    print "  Adding to $init_file\n";
+    my $fh;
+    if(open $fh, "<", $init_file) {
+        my @lines = <$fh>;
+        my @g = grep { /^#### LPM\($local_dir\)/ } @lines;
+        if(@g != 0) {
+            print "    It's already set-up. Skipped.\n";
+            return;
+        }
+        close $fh;
+        open $fh, ">>", $init_file or die "Cannot open '$init_file' for append";
+    } else {
+        if(-e $init_file) {
+            die "Cannot open '$init_file' as input";
+        }
+        open $fh, ">", $init_file or die "Cannot open '$init_file'";
+    }
+    print $fh "# DO NOT EDIT THE FOLLOWING TWO LINES\n";
+    print $fh "#### LPM($local_dir)\n$line\n";
+    close $fh;
+}
+
+sub remove_if_exist
+{
+    my $init_file = shift;
+    print "  Removing from $init_file\n";
+    my $fh;
+    unless(open $fh, "<", $init_file) {
+        print "    $init_file does not exist. Skipped.\n";
+        return;
+    }
+    my @lines = <$fh>;
+    my $tmp_file_name = "${init_file}.$$.tmp";
+    my $ofh;
+    open $ofh, ">", $tmp_file_name or die "    Cannot open a temporary file '$tmp_file_name'";
+    my @stack;
+    for(my $i = 0; $i < @lines; $i++) {
+        my $l = $lines[$i];
+        chomp $l; chop $l if($l =~ /\r$/);
+        if($l =~ /^# DO NOT EDIT THE FOLLOWING TWO LINES/) {
+            push(@stack, $lines[$i]);
+            next;
+        }
+        if($l =~ /^#### LPM\($local_dir\)/) {
+            @stack = ();
+            $i++;
+            next;
+        }
+        for(@stack){print $ofh $_}
+        @stack = ();
+        print $ofh $lines[$i];
+    }
+    close $ofh;
+    close $fh;
+    my $old_file_name = "${init_file}.old.$$";
+    if($flag_backup) {
+        unless(rename ($init_file, $old_file_name)) {
+            die "    Cannot rename '$init_file' to '$old_file_name'";
+        }
+    }
+    unless(rename ($tmp_file_name, $init_file)) {
+        if($flag_backup) {
+            unless(rename ($old_file_name, $init_file)) {
+                print STDERR "    ERROR: Cannot rename '$tmp_file_name' to '$init_file'\n";
+                print STDERR "           The original '$init_file' was already renamed to '$tmp_file_name'.\n";
+                die;
+            }
+            die "Cannot rename '$tmp_file_name' to '$init_file', but the original '$init_file' was restored.";
+        }
+    }
+}
+
+sub do_make_install
+{
+    do_shell("$make_path install");
+}
+
+sub do_shell
+{
+    my $cmdline = shift;
+    my $return_on_non_zero_exit = shift;
+    print STDERR "  \$ $cmdline\n";
+    my $ret_stat = system $cmdline;
+    if($ret_stat) {
+        if($? == -1) {
+            print STDERR "ERROR: Failed to execute the above command line.\n";
+            return undef if($return_on_non_zero_exit);
+            exit 2;
+        }
+        if($? & 127) {
+            my $sig_number = $? & 127;
+            my @sig_num_to_name;
+            @sig_num_to_name[split(' ', $Config{sig_num})] = split(' ', $Config{sig_name});
+            my $sig_string = $sig_num_to_name[$sig_number];
+            print STDERR "ERROR: The previous command died with signal $sig_string.\n";
+            return undef if($return_on_non_zero_exit);
+            exit 2;
+        } else {
+            my $exit_code = $? >> 8;
+            print STDERR "ERROR: The previous process exited with error code $exit_code.\n";
+            return undef if($return_on_non_zero_exit);
+            exit 1;
+        }
+    }
+    return 1;
+}
+
+sub do_shell_silently
+{
+    my $cmdline = shift;
+    system $cmdline;
+    if($?) {
+        print STDERR "  \$ $cmdline\n";
+        print STDERR "The previous process exited with error code ", ($? >> 8), "\n";
+        exit 1;
+    }
+}
+
+sub do_shell_silently_return_error_if_any
+{
+    my $cmdline = shift;
+    system $cmdline;
+    return $?;
+}
+
+sub do_gnu_build
+{
+    my ($file, $additional_configue_option, $additional_make_option) = @_;
+    print STDERR "GNU Build $file\n";
+    my $base_file    = get_file_name_from_path($file);
+    my $package_name = get_package_name_from_filename($base_file);
+    my $version      = get_version_from_filename($base_file);
+    my $sub_dir = "${package_name}-$version";
+    make_sure_dir_does_not_exist($sub_dir);
+    extract_archive($file, $build_dir);
+    chdir $sub_dir or die "Cannot chdir to $sub_dir";
+    {
+        my $cmdline = "./configure --prefix=$local_dir";
+        $cmdline .= " $additional_configue_option" if(defined $additional_configue_option);
+        do_shell($cmdline);
+    }
+    {
+        my $cmdline = "$make_path";
+        $cmdline .= " $additional_make_option" if(defined $additional_make_option);
+        do_shell($cmdline);
+    }
+}
+
+sub make_sure_dir_does_not_exist
+{
+    my $dir = shift;
+    if(-e $dir) {
+        for(my $i = 1; ; $i++) {
+            my $renamed_dir = "$dir.bak.$i";
+            next if(-e $renamed_dir);
+            do_shell("mv $dir $renamed_dir");
+            return 1;
+        }
+    }
+    return 1;
+}
+
+sub archive_directory_name
+{
+    my $archive_file = shift;
+    print STDERR "  Checking if $archive_file has a directory\n";
+    my $archive_type = can_handle_suffix($archive_file);
+    my $cmdline;
+    {
+        if($archive_type == 4) {
+            $cmdline = "$xz_path -cd $archive_file | $tar_path -t";
+        } elsif($archive_type == 3) {
+            $cmdline = "$unzip_path -t $archive_file";
+        } elsif($archive_type == 2) {
+            $cmdline = "$bzip_path -cd $archive_file | $tar_path -t";
+        } else {
+            $cmdline = "$gzip_path -cd $archive_file | $tar_path -t";
+        }
+    }
+    print "  \$ $cmdline\n";
+    my @archive_files = `$cmdline`;
+    if($?) { die "$?"; }
+    my %package_names;
+    for my $fname (@archive_files) {
+        chomp $fname;
+        if($archive_type == 3) {
+            unless($fname =~ m|^(^[^/]+)/|) {
+                print STDERR "    No. Has non directory file ($1).\n";
+                return undef;
+            }
+            my $package_name = $1;
+            $package_names{$package_name}++;
+        } else {
+            if($fname =~ m|^(.*)$|) {
+                my $bfname = $1;
+                if($bfname !~ m|^([^/]+)/|) {
+                    print STDERR "    No. Has non directory file ($bfname).\n";
+                    return undef;
+                } else {
+                    my $package_name = $1;
+                    $package_names{$package_name}++;
+                }
+            }
+        }
+    }
+    if(scalar(keys %package_names == 1)) {
+        my $the_package_name = join('', keys %package_names);
+        print STDERR "    Yes. name = '$the_package_name'\n";
+        return $the_package_name;
+    } else {
+        print STDERR "    No. Has multiple directories.\n";
+        print STDERR "    keys are (" . join(',', keys %package_names) . ")\n" if($debug > 1);
+    }
+    return undef;
+}
+
+sub extract_archive
+{
+    my ($archive_file, $extract_dir) = @_;
+    print STDERR "  Extracting $archive_file to $extract_dir ...\n";
+    if(defined $extract_dir) {
+        chdir $extract_dir or die "Cannot chdir to $extract_dir";
+    }
+    print STDERR "  \$ pwd\n";
+    print STDERR "  " . getcwd() . "\n";
+    my $cmdline;
+    {
+        my $archive_type = can_handle_suffix($archive_file);
+        if($archive_type == 4) {
+            $cmdline = "$xz_path -cd $archive_file | $tar_path -x -o";
+        } elsif($archive_type == 3) {
+            $cmdline = "$unzip_path -x $archive_file";
+        } elsif($archive_type == 2) {
+            $cmdline = "$bzip_path -cd $archive_file | $tar_path -x -o";
+        } else {
+            $cmdline = "$gzip_path -cd $archive_file | $tar_path -x -o";
+        }
+        $cmdline .= 'v' if($debug > 1 && $archive_type != 3);
+    }
+    do_shell($cmdline);
+    print STDERR "  done\n";
+}
+
+sub remove_local_dir
+{
+    my $cmdline = "rm -rf $local_dir";
+    my $responded_yes = user_query("******************************************\nWe are going to DELETE the local directory '$local_dir'.\nThe local directory '$local_dir' exists.\nDo you want to remove it for sure (N/y)?");
+    unless($responded_yes) {
+        print STDERR "Abort.\n";
+        exit 3;
+    }
+    print STDERR "\$ $cmdline\n";
+    system $cmdline;
+    if($?) {
+        print STDERR "ERROR: $!\n";
+        exit 4;
+    }
+}
+
+sub user_query
+{
+    my $message = shift;
+    my $y_allowed = 0;
+    my $n_allowed = 0;
+    my $default = undef;
+    if($message =~ m|\((.*)\)|) {
+        my $in_paren = $1;
+        for my $i (split(m|[/,]|, $in_paren)) {
+            $y_allowed = 1 if($i =~ m|^y$|i);
+            $n_allowed = 1 if($i =~ m|^n$|i);
+            $default = 1 if(!defined $default && $i eq 'Y');
+            $default = 1 if(!defined $default && $i eq 'Yes');
+            $default = 1 if(!defined $default && $i eq 'YES');
+            $default = 0 if(!defined $default && $i eq 'N');
+            $default = 0 if(!defined $default && $i eq 'No');
+            $default = 0 if(!defined $default && $i eq 'NO');
+        }
+    }
+    while(1) {
+        print STDERR "$message ";
+        if($flag_force) {
+            print STDERR "Yes\n";
+            return 1;
+        }
+        my $line = <>; chomp $line;
+        return $default if($line eq '' && defined $default);
+        return 1 if($line =~ m|^yes$|i);
+        return 0 if($line =~ m|^no$|i);
+        return 1 if($y_allowed && $line =~ m|^y$|i);
+        return 0 if($n_allowed && $line =~ m|^n$|i);
+        print STDERR "\nPlease answer yes or no\n";
+    }
+}
+
+# The following class behaves like LWP::UserAgent but
+# using wget.
+package WgetWrapper;
+sub new {
+    my ($class, $succeeded, $content, $url) = @_;
+    my $file_name = $url; $file_name =~ s|^.*/||;
+    print STDERR "WGET: Default file name = '$file_name'\n" if($debug > 0);
+    if($file_name eq '') {
+        $file_name = `grep http .tmp.log | tail -1`;
+        chomp $file_name;
+        $file_name =~ s|.*/||;
+    }
+    if($file_name eq '') {
+        $file_name = '.index.html';
+    }
+    print STDERR "WGET: Final file name = '$file_name'\n" if($debug > 0);
+    my $self = {ct => $content, fn => $file_name, sc => $succeeded};
+    bless $self, $class;
+    unlink ".tmp.log";
+    return $self;
+}
+sub content { my $t = shift; return $t->{ct}; }
+sub filename { my $t = shift; return $t->{fn}; }
+sub is_success { my $t = shift; return $t->{sc}; }
+
+package main;
+
+our $has_shown_useragent_warning = 0;
+sub request_url
+{
+    my $url = shift;
+    my $fall_back_to_wget = $flag_use_wget || ($is_wget_available && !$flag_nouse_wget);
+
+    unless($fall_back_to_wget) {
+        eval "use LWP::UserAgent;";
+        if($@) {
+            if(!$has_shown_useragent_warning) {
+                $has_shown_useragent_warning = 1;
+                print STDERR "WARNING: LWP::UserAgent module does not exist.\n";
+                print STDERR "         You can install it with CPAN, as usual with Perl modules.\n";
+                print STDERR "         If you are using RHEL (or equivalent OS such as CentOS),\n";
+                print STDERR "         you may want to do the following if you have root:\n";
+                print STDERR "             \$ sudo yum -y install perl-libwww-perl\n";
+                print STDERR "         For Ubuntu users, the following thread might help:\n";
+                print STDERR "             http://askubuntu.com/questions/180581/installing-libwww-perl-on-ubuntu-12-04-se\n\n";
+                print STDERR "         At this moment, we will fall back to using wget and continue.\n";
+            }
+            $fall_back_to_wget = 1;
+        }
+    }
+    my $protocol;
+    if($url =~ m|^([^:]+)://|) {
+        $protocol = $1;
+        print STDERR "  Protocol: $protocol\n" if($debug);
+    }
+    if(!$fall_back_to_wget && $protocol eq 'https') {
+        eval "use Crypt::SSLeay;";
+        if($@) {
+            print STDERR "WARNING: Perl module Crypt::SSLeay is required for downloading via https.\n";
+            print STDERR "WARNING: We will fall back to wget.\n";
+            $fall_back_to_wget = 1;
+        }
+    }
+    if($fall_back_to_wget) {
+        print STDERR "INFO: fall back to wget\n" if($debug);
+        my $wget_path = `which wget`; chomp $wget_path;
+        unless(-x $wget_path) {
+            print STDERR "ERROR: wget was not found.\n";
+            print STDERR "       You can install wget or Crypt::SSLeay to get it work.\n";
+            print STDERR "       Alternatively, you can manually download the package from\n";
+            print STDERR "       $url\n";
+            print STDERR "       and place it on $lib_dir, then you can try with exactly\n";
+            print STDERR "       the same command. The file you saved is used as a cache.\n";
+            exit 1;
+        }
+        my $no_cert_flag = $flag_wget_nocert ? "--no-check-certificate " : "";
+        my $cmd_line = "wget $no_cert_flag-o .tmp.log -O - '$url'";
+        print STDERR "DEBUG: cmdline: $cmd_line\n" if($debug > 1);
+        my $fcontent = `$cmd_line`;
+        print STDERR "INFO: " . scalar(length($fcontent)) . " bytes received.\n" if($debug > 1);
+        if($? == -1) { print STDERR "ERROR: could not execute wget.\n"; exit 1; }
+        if(($? >> 8) == 8) {
+            return new WgetWrapper(0);
+        }
+        if($? && $protocol eq 'https') {
+            print STDERR "INFO: If wget complains about SSL certificate, you can turn off the\n";
+            print STDERR "      security feature of wget by adding --wnocert to lpm, at the risk\n";
+            print STDERR "      of being attacked by others.\n";
+        }
+        return new WgetWrapper(1, $fcontent, $url);
+    }
+    my $useragent = new LWP::UserAgent;
+    $useragent->proxy('http', $ENV{'HTTP_PROXY'}) if($ENV{'HTTP_PROXY'});
+    $useragent->proxy('http', $ENV{'http_proxy'}) if($ENV{'http_proxy'});
+    $useragent->proxy('ftp', $ENV{'FTP_PROXY'}) if($ENV{'FTP_PROXY'});
+    $useragent->proxy('ftp', $ENV{'ftp_proxy'}) if($ENV{'ftp_proxy'});
+    $useragent->agent("LPM/" . VERSION_STRING . " " . $useragent->agent);
+    print STDERR "  Requesting to $url\n" if($debug);
+    my $request = new HTTP::Request(GET => $url);
+
+    return $useragent->request($request);
+}
+
+sub download_from_url_and_save_to_file
+{
+    my ($url, $filename) = @_;
+
+    print STDERR "  Saving $url to '$filename'\n" if($debug > 1);
+    if(-e $url) {
+        return link($url, $filename);
+    }
+    my $result = request_url($url);
+    if(ref($result) eq 'SCALAR') {
+        print STDERR "  REQUEST_URL: SCALAR\n" if($debug > 2);
+        my $fh;
+        open $fh, ">", $filename or die "Cannot save to $filename";
+        syswrite($fh, $$result);
+        close $fh;
+        return 1;
+    } else {
+        print STDERR "  REQUEST_URL: CLASS\n" if($debug > 2);
+        return 0 unless($result->is_success);
+        print STDERR "  REQUEST_URL: SUCCESS\n" if($debug > 2);
+        my $fh;
+        open $fh, ">", $filename or die "Cannot save to $filename";
+        my $content = $result->content();
+        print STDERR "  REQUEST_URL: CONTENT_SIZE=" . scalar(length($content)) . "\n" if($debug > 2);
+        syswrite($fh, $content);
+        close $fh;
+        return 1;
+    }
+}
+
+sub download_from_url_and_report_links
+{
+    my $url = shift;
+    print STDERR "  Downloading $url\n" if($debug > 1);
+    my $result = request_url($url);
+    my $content;
+    if(ref($result) eq 'SCALAR') {
+        $content = $$result;
+    } else {
+        return undef unless($result->is_success);
+        $content = $result->content();
+    }
+    my @links;
+    while ($content =~ m/<\s*a(?:\s+[^>]+)*\s+href\s*=\s*"([^"]*)"\s*>/g) {
+        my $link = $1;
+        push(@links, $link);
+    }
+    return @links;
+}
+
+sub sourceforge_net_download_latest
+{
+    my $target_url = shift;
+    my $result = request_url($target_url);
+    if($result->is_success()) {
+        print STDERR "  Got the result\n" if($debug > 1);
+        my $file_name;
+        eval { $file_name = $result->filename; };
+        print "File name: $file_name \n" if($debug > 2);
+        unless(defined $file_name) {
+            # Maybe the version of Perl is older than assumed.
+            print STDERR "Older Perl detected. Fall back to base().\n";
+            $file_name = $result->base();
+            $file_name =~ s|^.*/||;
+            print "File name (retry): $file_name \n" if($debug > 2);
+        }
+        unless(can_handle_suffix($file_name)) {
+            return { error => "Cannot handle $file_name because lpm does not know how to extract files from it."};
+        }
+        my $ver = get_version_from_filename($file_name);
+        my $name = get_package_name_from_filename($file_name);
+        my $url = $target_url;
+        print STDERR "      OK URL:$url FNAME:$file_name NAME:$name VER:$ver\n" if($debug > 1);
+        return { error => undef, url => $url, name => $name, fname => $file_name, ver => $ver, content => $result->content()};
+    } else {
+        print STDERR "  ERROR: Could not download\n" if($debug > 1);
+        return { error => "Could not download from '$porg_base'" };
+    }
+}
+
+sub sourceforge_net_getlatestversion
+{
+    my $target_url = shift;
+    my $package_name_to_download = shift;
+
+    my $result = request_url($target_url);
+    if($result->is_success()) {
+        print STDERR "  Got the result\n" if($debug > 1);
+        my $retval = { error => undef };
+        my @contents = $result->content();
+        my @available_packages;
+        my @found_packages;
+        for(@contents) {
+            # Thanks to T. Nishiyama for the following two lines.
+            while(/(url\s*:\s*('|&#39;)(.*?)('|&#39;)|href="([^"]+)")/g) {
+                my $url = (defined $3 ? $3 : $5);
+                if($url !~ m|^\w+://|) {
+                    if($url =~ m{^/}) {
+                        if($target_url =~ m|^(\w+://[^/]+)/|) {
+                            $url = $1 . $url;
+                        } else {
+                            $url = $target_url . " FIX ME (ABSOLUTE PATH) " . $url;
+                        }
+                    } else {
+                        if($target_url =~ m|/^|) {
+                            $url = $target_url . $url;
+                        } else {
+                            $url = $target_url . '/' . $url;
+                        }
+                    }
+                }
+                print STDERR "  URL: $url\n" if($debug > 2);
+                $url =~ s|/download$||; # Thanks to T. Nishiyama
+                my $file_name = get_file_name_from_path($url);
+                my $can_handle = can_handle_suffix($file_name);
+                next unless($can_handle);
+                my $ver = get_version_from_filename($file_name);
+                my $name = get_package_name_from_filename($file_name);
+                print STDERR "      OK URL:$url FNAME:$file_name NAME:$name VER:$ver\n" if($debug > 1);
+                my $package_hash = { url => $url, name => $name, fname => $file_name, ver => $ver, priority => $can_handle};
+                push(@found_packages, $package_hash); # save this for printing a friendly error message
+                next if(defined $package_name_to_download && $name !~ m|$package_name_to_download|i);
+                push(@available_packages, $package_hash);
+            }
+        }
+        @available_packages = sort { version_sort($b->{ver}, $a->{ver}) } @available_packages;
+        if($debug > 2) {
+            print STDERR "  Package list:\n";
+            for(@available_packages) {
+                print STDERR "    $_->{name} ver $_->{ver} prio $_->{priority}\n";
+            }
+        }
+        if(@available_packages == 0) {
+            print STDERR "  ERROR: No available packages.\n";
+            if(@found_packages > 0) {
+                print STDERR "         Other package(s) were found. Are you sure the package name you are looking for is '$package_name_to_download'?\n";
+                print STDERR "         For your information, here are the available packages and their versions.\n";
+                @found_packages = sort { my $c = $a->{name} cmp $b->{name}; return $c if($c); version_sort($b->{ver}, $a->{ver}); } @found_packages;
+                for(@found_packages) {
+                    print STDERR "         NAME: $_->{name} VER: $_->{ver} PRIORITY: $_->{priority}\n";
+                }
+                print STDERR "         \n";
+            }
+            return { error => "no available packages" };
+        }
+        my $highest_version = $available_packages[0]->{ver};
+        print STDERR "  Latest version = $highest_version\n" if($debug);
+        my @highest_version_packages = sort { $b->{priority} <=> $a->{priority} } grep { $_->{ver} eq $highest_version } @available_packages;
+        # dump(@highest_version_packages);
+        $retval->{package} = $highest_version_packages[0];
+        return $retval;
+    } else {
+        print STDERR "  ERROR: Could not download\n" if($debug > 1);
+        return { error => "Could not download from '$porg_base'" };
+    }
+}
+
+sub can_handle_suffix
+{
+    my $filename = shift;
+    return 4 if($filename =~ m|\.tar\.xz$|i  && $main::is_tar_available && $main::is_xz_available);
+    return 3 if($filename =~ m|\.zip$|i      && $main::is_unzip_available);
+    return 2 if($filename =~ m|\.tar\.bz2$|i && $main::is_tar_available && $main::is_bzip_available);
+    return 1 if($filename =~ m|\.tar\.gz$|i  && $main::is_tar_available && $main::is_gzip_available);
+    return 1 if($filename =~ m|\.tgz$|i      && $main::is_tar_available && $main::is_gzip_available);
+    return 0;
+}
+
+sub get_file_name_from_path
+{
+    my $path = shift;
+    $path =~ s|#.*$||;
+    $path =~ s|\?.*$||;
+    $path =~ m{([^/]*)$};
+    return $1;
+}
+
+sub get_version_from_filename
+{
+    my $filename = shift;
+    $filename =~ m|-(\d+(\.\d+)*(-p\d+)?)|;
+    return $1;
+}
+
+sub get_package_name_from_filename
+{
+    my $filename = shift;
+    $filename =~ m|^(\w+(-[a-z][\w+]+)*)|i;
+    return $1;
+}
+
+sub version_sort
+{
+    my ($aa, $bb) = @_;
+    my $a_maj = 0;
+    my $b_maj = 0;
+    my $a_rest;
+    my $b_rest;
+    if($aa =~ m|^(\d+)\.(.*)$|) {
+        $a_maj = $1; $a_rest = $2;
+    } else {
+        $a_maj = $aa;
+    }
+    if($bb =~ m|^(\d+)\.(.*)$|) {
+        $b_maj = $1; $b_rest = $2;
+    } else {
+        $b_maj = $bb;
+    }
+    if($a_maj != $b_maj) {
+        return $a_maj <=> $b_maj;
+    }
+    return -1 unless(defined $a_rest);
+    return  1 unless(defined $b_rest);
+    return version_sort($a_rest, $b_rest);
+}
+
+sub ensure_that_compiler_is_available
+{
+    my $cc = $ENV{'CC'};
+    $cc = 'gcc' unless(defined $cc);
+    my $cc_path = `which $cc`; chomp $cc_path;
+    unless(-x $cc_path) {
+        $cc = 'cc';
+        $cc_path = `which $cc`; chomp $cc_path;
+    }
+    unless(-x $cc_path) {
+        print STDERR "ERROR: Could not find a C compiler.\n";
+        print STDERR "       Please set the environment variable 'CC'\n";
+        print STDERR "       if you use a different compiler than cc or gcc.\n";
+        exit 11;
+    }
+}
+
+sub show_help
+{
+    my $sub_arg = shift;
+    unless(defined $sub_arg) {
+        print STDERR "usage: lpm <command>\n";
+        print STDERR << 'EOF';
+ commands are:
+  list             list the installed packages
+  install          install a package using a specified lpm
+  uninstall        uninstall a specified package
+  download         download from a specified URL
+  initlocaldir     initialize the local directory
+  removelocaldir   delete the local directory
+  lpm              execute lpm script
+  updateself       update LPM to the latest stable version
+  updatelpmdevel   update LPM to the latest development version (possibly unstable)
+  initcpan         initialize CPAN (for Perl)
+  ssconfig         show/change start-up script status
+  showinstalled    show installed packages
+  listrepos        list packages in repositories
+  sourceforge      download and install the latest version of a software
+                   (e.g., 'lpm sourceforge sevenzip 7-zip 7-Zip/' will install 7-zip package.)
+  freeze           freeze a package
+  thaw             thaw a package
+  fridge           show the packages in the fridge
+  manualinstall    manually install a packge using a specified command line
+  help             show help
+
+ type "lpm help <command>" to show the command help.
+
+EOF
+        return;
+    }
+    if($sub_arg =~ m|^help$|i) {
+        print STDERR "Type 'lpm help <command>' to show the command help.\n";
+        print STDERR "For example, you can type 'lpm help list' to show\n";
+        print STDERR "how to use 'list' command.\n";
+        return;
+    }
+    if($sub_arg =~ m|^list$|i) {
+        print STDERR "'lpm list' will show you the list of installed packages.\n";
+        print STDERR "'lpm list hogehoge' will show you the list of the installed files in 'hogehoge' package.\n";
+        return;
+    }
+    if($sub_arg =~ m|^install$|i) {
+        print STDERR "'lpm install /some/path/hogehoge.lpm' will install package hogehoge using that lpm.\n";
+        print STDERR "'lpm install /some/path/hogehoge.tar.gz' will install the package by GNU style.\n";
+        print STDERR "'lpm install http://example.com/hogehoge.lpm' will download a lpm file and install a package using it.\n";
+        print STDERR "'lpm install http://example.com/hogehoge.tar.gz' will download a tarball and install it by GNU style.\n";
+        return;
+    }
+    if($sub_arg =~ m|^lpm$|i) {
+        print STDERR "'lpm lpm <lpmscript> will execute the specified lpm script.\n";
+        print STDERR " This feature is basically designed for debugging purpose,\n";
+        print STDERR " so that users may not easily use this feature.\n";
+        return;
+    }
+    if($sub_arg =~ m|^sourceforge$|i) {
+        print STDERR "'lpm sourceforge' command will install the specified package in the sourceforge.net.\n";
+        print STDERR "Directory structure of a project might vary, so we have several types of the options.\n";
+        print STDERR "'lpm sourceforge hoge' if the project name is the same as the package name.\n";
+        print STDERR "'lpm sourceforge hoge fuga' if the project name is hoge but fuga is a package distributed in the project hoge.\n";
+        print STDERR "'lpm sourceforge hoge fuga moge/' if the project name is hoge but fuga is the package you want, and moge/ is the relative path of the distribution directory.\n";
+        return;
+    }
+    if($sub_arg =~ m|^uninstall$|i) {
+        print STDERR "'lpm uninstall hogehoge' will uninstall 'hogehoge' package.\n";
+        print STDERR "If some files are shared between a user-specified package and another package,\n";
+        print STDERR "you would see them undeleted. If you would like to remove shared files (and\n";
+        print STDERR "non-shared files), please add --force option.\n";
+        return;
+    }
+    if($sub_arg =~ m|^download$|i) {
+        print STDERR "'lpm download <URL>' will download from the specified URL a file,\n";
+        print STDERR "which will then be saved to the archive directory.\n";
+        return;
+    }
+    if($sub_arg =~ m|^init(local(dir))?$|i) {
+        print STDERR "'lpm initlocaldir' will prepare a local directory, download and build porg,\n";
+        print STDERR "which manages tarball packages, create 'start-up' scripts for various shells,\n";
+        print STDERR "and finally add 'source' command to the start-up scripts of your shell (e.g., ~/.bashrc).\n";
+        print STDERR "lpm uses ~/lcl as a default local directory, but you can override this by -local option.\n";
+        print STDERR "For example, give -local=foo to use ~/foo as a local directory.\n";
+        print STDERR "lpm allows you to use multiple local directories.\n";
+        return;
+    }
+    if($sub_arg =~ m|^removelocaldir$|i) {
+        print STDERR "'lpm removelocaldir' will unroll the changes made by 'lpm initlocaldir'.\n";
+        print STDERR "You have to be very careful when you use this command\n";
+        print STDERR "because it is destructive and thus you cannot undo.\n";
+        print STDERR "All the installed packages are removed.\n";
+        return;
+    }
+    if($sub_arg =~ m|^updatelpm$|i) {
+        print STDERR "'lpm updatelpm' will update myself.\n";
+        print STDERR "Internet connection is required to do this.\n";
+        return;
+    }
+    if($sub_arg =~ m|^ssconfig$|i) {
+        print STDERR "'lpm ssconfig' shows startup script configurations.\n";
+        print STDERR "Status 'on' means the local directory is active and startup scripts are loaded when logging in.\n";
+        print STDERR "Status 'off' means the local directory is inactive and will not be used.\n";
+        print STDERR "'lpm ssconfig <dir> on' turns on the local directory active, while\n";
+        print STDERR "'lpm ssconfig <dir> off' inactivates the local directory.\n";
+        return;
+    }
+    if($sub_arg =~ m|^showinstalled$|i) {
+        print STDERR "'lpm showinstalled' shows the installed packages\n";
+        print STDERR "The output format looks like 'lpm install [URL/package name],\n";
+        print STDERR "so that you can execute it as a shell script.\n";
+        return;
+    }
+    if($sub_arg =~ m|^listrepos$|i) {
+        print STDERR "'lpm listrepos' lists the packages in repositories. \n";
+        return;
+    }
+    if($sub_arg =~ m|^initcpan$|i) {
+        print STDERR "'lpm initcpan' initialize CPAN (for Perl).\n";
+        print STDERR "This command sets up local Perl module directories.\n";
+        print STDERR "You can install Perl modules in the local directory.\n";
+        return;
+    }
+    if($sub_arg =~ m|^freeze$|i) {
+        print STDERR "'lpm freeze' creates a binary tarball that contains all files\n";
+        print STDERR "installed and logged in a database.\n";
+        print STDERR "For example, 'lpm freeze foo' creates a tarball for package foo.\n";
+        print STDERR "The created tarball will go to $lpmlib_dir\n";
+        print STDERR "You can copy it to another machine, and use it by 'lpm thaw'.\n";
+        print STDERR "Another use case is that you want to upgrade some package,\n";
+        print STDERR "but you still want to hold an option to roll it back.\n";
+        print STDERR "You freeze the package, uninstall it, install the latest version,\n";
+        print STDERR "find it not working, then you can uninstall it, and thaw the freezed\n";
+        print STDERR "tar ball. Everthing goes back.\n";
+        return;
+    }
+    if($sub_arg =~ m|^thaw$|i) {
+        print STDERR "'lpm thaw' extracts the files in the specified binary tarball,\n";
+        print STDERR "which was created by 'lpm freeze'.\n";
+        return;
+    }
+    if($sub_arg =~ m{^(fridge|refrigerator)$}i) {
+        print STDERR "'lpm fridge' shows the list of binary tarballs created by 'lpm freeze'.\n";
+        return;
+    }
+    if($sub_arg =~ m{^manualinstall$}i) {
+        print STDERR "'lpm manualinstall' installs a package using a given command line.\n";
+        print STDERR "This is useful when you install a package by hand.\n";
+        print STDERR "Example 1: Execute a script './install_script.sh' to install a package named 'foo-1.4.2'\n";
+        print STDERR "    \% lpm manualinstall --name=foo-1.4.2 ./install_script.sh\n";
+        print STDERR "Example 2: Execute a script 'make install' to install a package. The package name is taken from the current directory.\n";
+        print STDERR "    \% lpm manualinstall make install\n";
+        return;
+    }
+    print STDERR "Unknown command '$sub_arg'\n";
+    print STDERR "If you're sure that '$sub_arg' is a valid command,\n";
+    print STDERR "proabably it's not documented here yet.\n";
+    return;
+}
+
+sub list_packages
+{
+    my $sub_arg = shift;
+    my $error_code = 0;
+    if(defined $sub_arg) {
+        $error_code = do_shell_silently_return_error_if_any("$porg_path -f $sub_arg");
+    } else {
+        if($porg_path =~ /paco/) {
+            do_shell_silently("$porg_path -1adFs"); # for backward compatibility to old versions
+        } else {
+            do_shell_silently("$porg_path -adFs");
+        }
+    }
+    if($error_code) {
+        unless(-x $porg_path) {
+            print STDERR "ERROR: porg is not executable.\n";
+        } else {
+            if(defined $sub_arg) {
+                print STDERR "ERROR: package '$sub_arg' was not found (or porg did not work well)\n";
+            } else {
+                print STDERR "ERROR: porg did not work well.\n";
+            }
+        }
+        exit 1;
+    }
+}
+
+sub get_repositories
+{
+    if(open my $fh, "<", $lpm_repo_file) {
+        my @repositories;
+        while(<$fh>) {
+            chomp; chop if(/\r$/);
+            s|#.*||;
+            s|^\s+||;
+            next if(/^$/);
+            push(@repositories, $_);
+        }
+        close $fh;
+        return @repositories;
+    } else {
+        print STDERR "ERROR: could not open the repository configuration file '$lpm_repo_file'\n";
+        exit 1;
+    }
+}
+
+sub list_repository
+{
+    for my $reposurl (get_repositories()) {
+        my @links = download_from_url_and_report_links($reposurl);
+        print "$reposurl:\n";
+        for my $link (@links) {
+            if($link =~ m/^(\S+).lpm$/) {
+                print "  $1\n";
+            }
+        }
+    }
+}
+
+sub download_package
+{
+    my $url = shift;
+    if(defined $url) {
+        my $file_name = get_file_name_from_path($url);
+        print STDERR "URL:$url\nFNM:$file_name\n";
+        my $save_path = "$archive_dir/$file_name";
+        download_from_url_and_save_to_file($url, $file_name) or die "Failed to download $url";
+    } else {
+        print "Please give a URL to download\n";
+    }
+}
+
+sub try_downloading_by_ssh
+{
+    my $archive_path = shift;
+    my $lpm_local_repo_file = "$local_dir/.lpmlocalrepo";
+    unless(-e $lpm_local_repo_file) {
+        print STDERR "  Local repository file '$lpm_local_repo_file' was not found.\n" if($debug > 1);
+        return 1;
+    }
+    if(open my $fh, "<", $lpm_local_repo_file) {
+        my $file_name = get_file_name_from_path($archive_path);
+        while(<$fh>) {
+            chomp; chop if(/\r$/);
+            next if(/^\s*#/ || /^\s*$/);
+            $_ .= "/" unless(m|/$|);
+            my $remote_file = "${_}$file_name";
+            print STDERR "  Trying to use a remote file '$remote_file', if it exists.\n";
+            my $cmdline = "scp $remote_file $archive_path";
+            print STDERR "  \% $cmdline\n" if($debug > 1);
+            my $retval = system $cmdline;
+            print STDERR "  SYSTEM_RET=$retval, \$?=$?\n" if($debug > 1);
+            if($retval == -1) {
+                print STDERR "  ERROR: scp could not be executed.\n";
+                close $fh;
+                return 1;
+            } else {
+                if($? & 127) {
+                    print STDERR "  Failed to scp.\n";
+                    close $fh;
+                    return 1;
+                } elsif($? == 0) {
+                    # do nothing
+                } else {
+                    print STDERR "  Failed to scp. Probably the package is not in the specified directory.\n";
+                    close $fh;
+                    return 1;
+                }
+            }
+        }
+        close $fh;
+    } else {
+        print STDERR "  ERROR: '$lpm_local_repo_file' could not be opened. Check the permission.\n";
+        return 1;
+    }
+    return 0;
+}
+
+sub extract_package
+{
+    my $package_file_name = shift;
+    if(defined $package_file_name) {
+        print STDERR "Extracting package '$package_file_name'\n";
+        my $real_file_name = "$archive_dir/$package_file_name";
+        unless(-e $real_file_name) {
+            print STDERR "Could not file $real_file_name\n";
+            exit 1;
+        }
+        my $base_file    = get_file_name_from_path($package_file_name);
+        my $package_name = get_package_name_from_filename($base_file);
+        my $version      = get_version_from_filename($base_file);
+        my $sub_dir = "${package_name}-$version";
+        my $build_sub_dir = "$build_dir/$sub_dir";
+        my $dir_in_archive = archive_directory_name($real_file_name);
+        unless(chdir $build_dir) {
+            print STDERR "Cannot chdir to '$build_dir'\n";
+            exit 1;
+        }
+        make_sure_dir_does_not_exist($build_sub_dir);
+        print STDERR "Found dirname in archive: $dir_in_archive\n";
+        print STDERR "Build dir: $sub_dir\n";
+        if(defined $dir_in_archive && $dir_in_archive eq $sub_dir) {
+            extract_archive($real_file_name, $build_dir);
+        } else {
+            mkdir $build_sub_dir or die "Cannot mkdir $build_sub_dir";
+            extract_archive($real_file_name, $build_sub_dir);
+        }
+        chdir $build_sub_dir or die "Cannot chdir to $build_sub_dir";
+    } else {
+        print "Please give a package name.\n";
+    }
+}
+
+sub uninstall_package
+{
+    my $package_name = shift;
+    if($package_name eq 'porg' && !$flag_force) {
+        print STDERR "Are you sane? lpm requires porg.\n";
+        print STDERR "Add -force to do that.\n";
+        exit 1;
+    }
+    if($package_name eq 'lpm' && !$flag_force) {
+        print STDERR "Are you sane? lpm is myself!\n";
+        print STDERR "Add -force to do that.\n";
+        exit 1;
+    }
+    my $error_code = do_shell_silently_return_error_if_any("$porg_path -f $package_name");
+    if($error_code) {
+        print STDERR "We did not find such a package '$package_name'\n";
+        print STDERR "do 'lpm list' to check the package name.\n";
+        exit 1;
+    }
+    if($flag_force) {
+        do_shell_silently("$porg_path --remove-shared $package_name");
+    } else {
+        do_shell_silently("$porg_path -rr $package_name");
+    }
+    add_install_log("uninstall", $package_name, $package_url_path);
+}
+
+sub add_install_log
+{
+    my ($command_type, $package_name, $package_url) = @_;
+    my $fn = $lpminstalllog;
+    open my $fh, ">>", $fn or die "Could not open '$fn'";
+    print $fh "$command_type\t$package_name\t$package_url\n";
+    close $fh;
+}
+
+sub install_package
+{
+    my ($install_source, $other_args) = @_;
+    # the source is one of the followings:
+    # 1. local lpm file
+    # 2. remote lpm file
+    # 3. local tarball
+    # 4. remote tarball
+    # 5. raw package name
+    my $is_remote = $install_source =~ m|^([^:]+):|;
+    my $tried_repositories_but_not_found = 0;
+    if($is_remote) {
+        my $protocol = $1;
+        my $url = $install_source;
+        my $file_name = get_file_name_from_path($url);
+        my $save_path;
+        if($file_name =~ m|\.lpm$|) {
+            $save_path = "$lpmlib_dir/$file_name";
+        } else {
+            $save_path = "$archive_dir/$file_name";
+        }
+        download_from_url_and_save_to_file($url, $save_path) or die "Failed to download $url";
+        $install_source = $save_path;
+    } else {
+        unless(-e $install_source) {
+            # check it in remote repository.
+            my $fh;
+            if(open $fh, "<", $lpm_repo_file) {
+                unless($is_gpg_available) {
+                    print STDERR "WARNING: gpg is not available. Packages will not be verified.\n";
+                    print STDERR "         This means that we are not protected from attacks such as\n";
+                    print STDERR "         man-in-the-middle attack or DNS poisoning.\n";
+                    print STDERR "         If you need security feature, please install GnuPG.\n";
+                }
+                $tried_repositories_but_not_found = 1;
+                while(<$fh>) {
+                    chomp; chop if(/\r$/);
+                    s|#.*||;
+                    s|^\s+||;
+                    next if(/^$/);
+                    my $url      = "$_/${install_source}.lpm.asc";
+                    my $filename = "$lpmlib_dir/${install_source}.lpm.asc";
+                    my $result = download_from_url_and_save_to_file($url, $filename);
+                    if($result) {
+                        $install_source = $filename;
+                        $tried_repositories_but_not_found = 0;
+                        last;
+                    }
+                }
+                close $fh;
+            } else {
+                print STDERR "WARNING: '$lpm_repo_file' does not exist. Will not check remote repositories.\n";
+            }
+        }
+    }
+    if($tried_repositories_but_not_found) {
+        print STDERR "\nERROR: Could not find a package '$install_source'.\n";
+        print STDERR "You can see the available packages by 'lpm listrepos',\n";
+        print STDERR "or you can check the package list provided by the repository you use.\n";
+        print STDERR "For your information, the package list of the standard repository is available at\n";
+        print STDERR "\thttp://www.kasahara.ws/lpm/browse.html\n\n";
+        print STDERR "Note that the package name is case sensitive ('Abc' and 'abc' are considered to be different).\n";
+        exit 3;
+    }
+    # if the file is signed clear text, extract it.
+    if($install_source =~ m|\.asc$|i) {
+        my $decrypted_file_name = $install_source; $decrypted_file_name =~ s|\.asc$||;
+        die "Logic error! Report to the author" if($decrypted_file_name eq $install_source);
+        $install_source = verify_gpg_signature_and_dearmor($install_source, $decrypted_file_name);
+    }
+    # the source is one of the followings:
+    # 1. local lpm file
+    # 3. local tarball
+    my @lpm;
+    if($install_source =~ m|\.lpm$|i) {
+        my $fh;
+        open $fh, "<", $install_source or die "Cannot open '$install_source' as lpm file";
+        @lpm = <$fh>;
+        close $fh;
+    } else {
+        push(@lpm, "source=$install_source");
+        push(@lpm, "url=$install_source");
+        push(@lpm, "download");
+        push(@lpm, "extract");
+        push(@lpm, "configure");
+        push(@lpm, "make");
+        push(@lpm, "makeinstall");
+    }
+    interpret_lpm_script($other_args, @lpm);
+}
+
+sub show_build_help
+{
+    my $lpm_script = shift;
+    my @depends;
+    for(@$lpm_script) {
+        if(/\s*#\s*Depends\s*:\s*(.*)/i) {
+            push(@depends, $1);
+        }
+    }
+    print STDERR "INFO: The build seemed to have failed.\n";
+    print STDERR "      The reason of the build failure may vary, but it is a good\n";
+    print STDERR "      starting point to check the very first error in the log message.\n";
+    print STDERR "      Errors other than the very first one might have been caused by\n";
+    print STDERR "      the first one.\n";
+    if(0 < @depends) {
+        print STDERR "INFO: This package has some dependent package(s).\n";
+        print STDERR "      You may try installing them first if they do not exist on the system.\n";
+        print STDERR "      DEPENDENCIES:\n";
+        print STDERR "          " . join(', ', @depends) . "\n";
+        print STDERR "INFO: If you believe that you installed all the dependencies\n";
+        print STDERR "      by LPM, you might have missed installing the compier-envs package.\n";
+        print STDERR "      You can type 'lpm install compiler-envs' to install it.\n";
+        print STDERR "      You need to relogin after installing compiler-envs.\n";
+    }
+}
+
+sub interpret_lpm_script
+{
+    my $other_args = shift;
+    # $other_args are for parameters to the package being installed.
+    my $p = {}; # this is a variable that stores parameters.
+    for(@$other_args) {
+        if(m|^\s*(\S+)\s*=\s*(.*)$|) {
+            my $k = $1;
+            my $v = $2;
+            $k =~ tr/a-z/A-Z/;
+            $p->{$1} = $2;
+        } else {
+            s|^\s+||;
+            s|\s+$||;
+            $p->{$_} = 1;
+        }
+    }
+    my @lpm = @_;
+    # interpreter variables
+    my $is_first_invocation_of_porg = 1;
+    my $install_source_url;
+    my $file_name;
+    my $package_name;
+    my $version;
+    my $directory_name;
+    my $url;
+    my $archive_path;
+    my $build_sub_dir;
+    my $init_script_init;
+    my $init_script_login;
+    # interpret lpm scirpt
+    LINELOOP: for(my $lpm_line = 0; $lpm_line < @lpm; $lpm_line++) {
+        my $cmd = $lpm[$lpm_line];
+        chomp $cmd;
+        chop if($cmd =~ m|\r$|);
+        $cmd =~ s|^\s+||; # remove preceding spaces
+        $cmd =~ s|\s+$||; # remove trailing spaces
+        $cmd =~ s|#.*$||; # remove a comment (if any)
+        next if($cmd =~ m|^\s*$|);   # skip an empty line
+        print STDERR "  LPM DO: $cmd\n" if($debug);
+        while($cmd =~ m|^\s*if\s*\{\s*(.*)\}\s*(.*)$|) {
+            my $condition = $1;
+            my $rest = $2;
+            print STDERR "  LPM condition \{$condition\}, rest:$rest\n" if($debug > 2);
+            my $r = eval $condition;
+            next LINELOOP unless($r);
+            $cmd = $rest;
+        }
+        my $operator;
+        my $argument;
+        if($cmd =~ m|^(\w+)\s*=\s*(.*)|) {
+            $operator = $1;
+            $argument = $2;
+        } else {
+            if($cmd =~ m|^(\w+)\s+(.*)|) {
+                $operator = $1;
+                $argument = $2;
+            } else {
+                $operator = $cmd;
+            }
+        }
+        print STDERR "    (OPERATOR=$operator, ARGS=$argument)\n" if($debug > 1);
+        if($operator eq 'source') {
+            $install_source_url = $argument;
+            $file_name = get_file_name_from_path($install_source_url);
+            $package_name = get_package_name_from_filename($file_name);
+            $version = get_version_from_filename($file_name);
+            $directory_name = "$package_name-$version";
+            $archive_path = "$archive_dir/$file_name";
+        } elsif($operator eq 'name') {
+            $package_name = $argument;
+            $directory_name = "$package_name-$version"; # Thanks to T. Nishiyama
+        } elsif($operator eq 'ver') {
+            $version = $argument;
+            unless($version eq '') {
+                $directory_name = "$package_name-$version"; # Thanks to T. Nishiyama
+            } else {
+                $directory_name = $package_name;
+            }
+        } elsif($operator eq 'topdirname') { # Thanks to T. Nishiyama
+            $directory_name = $argument;
+        } elsif($operator eq 'url') {
+            $url = $argument;
+        } elsif($operator eq 'manualdownload') {
+            my $license_type = $argument;
+            unless(-e $archive_path) {
+                my $has_failed = try_downloading_by_ssh($archive_path);
+                if($has_failed) {
+                    print STDERR "\n\n", "*"x70, "\n";
+                    print STDERR "  This package, $package_name, cannot be automatically downloaded\n";
+                    print STDERR "  because its license";
+                    if(defined $license_type && $license_type ne '') { print STDERR " '$license_type'"; }
+                    print STDERR " is incompatible with automatic downloading.\n";
+                    print STDERR "  You are required to manually download the package and put it as\n";
+                    print STDERR "  '$archive_path',\n";
+                    print STDERR "  then try again with the same command line.\n";
+                    if(defined $url && $url ne '') {
+                        print STDERR "  For your information, the web page for the package is as follows:\n";
+                        print STDERR "    $url\n";
+                    }
+                    print STDERR "  If you have multiple machines without shared home directories,\n";
+                    print STDERR "  and still you want to automatically download non-distributable packages,\n";
+                    print STDERR "  please follow the following instructions.\n\n";
+                    print STDERR "     1) Suppose that you have a secure server into which you can login\n";
+                    print STDERR "        by ssh.\n";
+                    print STDERR "     2) Put non-distributable packages in a directory of that server.\n";
+                    print STDERR "        Please make sure that the packages are not accessible by others\n";
+                    print STDERR "        as the licensor requires.\n";
+                    print STDERR "     3) Create a file, '$local_dir/.lpmlocalrepo, which contains the\n";
+                    print STDERR "        remote directory where you put the packages. For example,\n";
+                    print STDERR "        write the following line:\n";
+                    print STDERR "            username\@example.com:/home/username/secretdir\n";
+                    print STDERR "        You can put comments in lines starting with '#'.\n";
+                    print STDERR "        Blank lines are also ignored.\n";
+                    print STDERR "     4) When a file for a given package is not available as a local file,\n";
+                    print STDERR "        LPM will look for it in the specified (remote) directory.\n";
+                    exit 1;
+                } else {
+                    print STDERR "INFO: $archive_path was downloaded from the remote directory by scp.\n";
+                    print STDERR "      You should look at '$local_dir/.lpmlocalrepo' when this is not what you intended.\n";
+                }
+            }
+        } elsif($operator eq 'download') {
+            my $vcs_type = get_vcs_type_from_url($install_source_url);
+            unless(defined $vcs_type) {
+                my $skip_download = 0;
+                if(-s $archive_path) {
+                    my $file_result = `file -b $archive_path`; chomp $file_result;
+                    unless($file_result =~ m|HTML|i) {
+                        $skip_download = 1;
+                    } else {
+                        print STDERR "  '$archive_path' looks like an HTML file.\n";
+                        print STDERR "  It might be something like '404 not found' or 'Temporary Unavailable'.\n";
+                        print STDERR "  We will download it again.\n";
+                    }
+                }
+                unless($skip_download) {
+                    download_from_url_and_save_to_file($install_source_url, $archive_path) or die "Failed to download $install_source_url";
+                } else {
+                    print STDERR "  '$archive_path' already exists, so we skip downloading it.\n";
+                    print STDERR "  If the file is broken, please remove it first, and try again.\n";
+                }
+            } else {
+                unless(is_known_vcs_type($vcs_type)) {
+                    print STDERR "ERROR: Version control system '$vcs_type' is not supported.\n";
+                    exit 17;
+                }
+                my $vcs_path = get_vcs_executable_path_for_sure($vcs_type);
+                my $command = "$vcs_path " . get_vcs_command_by_portable_name('clone', $vcs_type) . " " . get_repository_url($install_source_url);
+                if(defined $package_name) { $command .= " $package_name"; }
+                unless(chdir $build_dir) {
+                    print STDERR "Cannot chdir to '$build_dir'\n";
+                    exit 1;
+                }
+                do_shell($command);
+                my $cloned_dir = "$build_dir/$package_name";
+                unless(defined $version) {
+                    $version = get_repository_version_from_cloned_directory($cloned_dir, $vcs_type, $vcs_path);
+                }
+                unless(defined $directory_name) {
+                    $directory_name = "$package_name-$version";
+                }
+                $build_sub_dir = "$build_dir/$directory_name";
+                unless(rename_for_sure($cloned_dir, $build_sub_dir)) {
+                    print STDERR "ERROR: Could not rename $cloned_dir to $build_sub_dir\n";
+                    exit 21;
+                }
+            }
+        } elsif($operator eq 'getlatest') {
+            $argument =~ m|^(\S+)\s+(\S+)$|;
+            $package_name = $1;
+            $url          = $2;
+            print STDERR "  Searching the latest package in $url\n";
+            my $result = sourceforge_net_getlatestversion($url, $package_name);
+            if($result->{error}) {
+                print STDERR "    An error occurred while retrieving.\n";
+                exit 16;
+            }
+            $install_source_url = $result->{package}->{url};
+            print STDERR "     Set the URL to $install_source_url\n";
+            $file_name = get_file_name_from_path($install_source_url);
+            $package_name = get_package_name_from_filename($file_name);
+            $version = get_version_from_filename($file_name);
+            $directory_name = "$package_name-$version";
+            $archive_path = "$archive_dir/$file_name";
+        } elsif($operator eq 'extract') {
+            $build_sub_dir = "$build_dir/$directory_name";
+            my $dir_in_archive = archive_directory_name($archive_path);
+            unless(chdir $build_dir) {
+                print STDERR "Cannot chdir to '$build_dir'\n";
+                exit 1;
+            }
+            make_sure_dir_does_not_exist($build_sub_dir);
+            if(defined $dir_in_archive && $dir_in_archive eq $directory_name) {
+                extract_archive($archive_path, $build_dir);
+            } else {
+                mkdir $build_sub_dir or die "Cannot mkdir $build_sub_dir";
+                extract_archive($archive_path, $build_sub_dir);
+            }
+        } elsif($operator eq 'noneedtoextract') {
+            $build_sub_dir = $archive_dir;
+        } elsif($operator eq 'configure') {
+            print STDERR "      (has an additional option '$argument')\n" if($debug > 1);
+            if($build_sub_dir eq '') {
+                print STDERR "WARNING: no build directory was found.\n";
+            } else {
+                chdir $build_sub_dir or die "Cannot chdir to $build_sub_dir";
+            }
+            my $cmdline = "./configure --prefix=$local_dir";
+            $cmdline .= " $argument" if(defined $argument);
+            unless(do_shell($cmdline, 1)) {
+                show_build_help(\@lpm);
+                exit 1;
+            }
+        } elsif($operator eq 'make') {
+            print STDERR "      (has an additional option '$argument')\n" if($debug > 1);
+            if($build_sub_dir eq '') {
+                print STDERR "WARNING: no build directory was found.\n";
+            } else {
+                chdir $build_sub_dir or die "Cannot chdir to $build_sub_dir";
+            }
+            my $cmdline = "$make_path";
+            my $default_make_option = $ENV{'LPM_MAKE_OPTION'};
+            $cmdline .= " $default_make_option" if(defined $default_make_option);
+            $cmdline .= " $argument" if(defined $argument);
+            unless(do_shell($cmdline, 1)) {
+                show_build_help(\@lpm);
+                exit 1;
+            }
+        } elsif($operator eq 'makeinstall') {
+            print STDERR "      (has an additional option '$argument')\n" if($debug > 1);
+            if($build_sub_dir eq '') {
+                print STDERR "WARNING: no build directory was found.\n";
+            } else {
+                chdir $build_sub_dir or die "Cannot chdir to $build_sub_dir";
+            }
+            my $append_flag = "";
+            if($is_first_invocation_of_porg) {
+                $is_first_invocation_of_porg = 0;
+            } else {
+                $append_flag = "--append ";
+            }
+            my $cmdline = "$porg_path -p ${package_name}-${version} $append_flag-l $make_path install";
+            $cmdline .= " $argument" if(defined $argument);
+            do_shell($cmdline);
+            add_install_log("install", $package_name, $package_url_path);
+        } elsif($operator eq 'custominstall' || $operator eq 'shell') {
+            if($build_sub_dir eq '') {
+                print STDERR "NOTE: no build directory was found.\n" if($debug > 1);
+            } else {
+                chdir $build_sub_dir or die "Cannot chdir to $build_sub_dir";
+            }
+            my $script_start = $lpm_line + 1;
+            my $script_end   = $script_start;
+            $script_end++ while($script_end < @lpm && $lpm[$script_end] !~ /^\s*EOC\s*$/);
+            unless($script_end < @lpm) { # NOTE: This block is duplicated. Consider refactoring before any modification.
+                print STDERR "ERROR: Premature end of script. EOC is missing.\n";
+                print STDERR "       Check the LPM script if EOC is properly inserted.\n";
+                exit 1;
+            }
+            $lpm_line = $script_end;
+            my $fh;
+            my $script_path;
+            ($fh, $script_path) = File::Temp::tempfile(SUFFIX => '.sh');
+            print $fh "#!/bin/sh\n";
+            print $fh "LOCAL_DIR=$local_dir\n";
+            print $fh "BIN_DIR=$bin_dir\n";
+            print $fh "LIB_DIR=$lib_dir\n";
+            print $fh "MAN_DIR=$man_dir\n";
+            print $fh "ARCHIVE_DIR=$archive_dir\n";
+            print $fh "VAR_DIR=$var_dir\n";
+            print $fh "OPT_DIR=$opt_dir\n";
+            print $fh "ETC_DIR=$etc_dir\n";
+            print $fh "SHARE_DIR=$share_dir\n";
+            print $fh "INCLUDE_DIR=$include_dir\n";
+            print $fh "BUILD_DIR=$build_dir\n";
+            print $fh "LPMLIB_DIR=$lpmlib_dir\n";
+            print $fh "PACKAGE_NAME=$package_name\n";
+            print $fh "ARCHIVE_FILE=$archive_path\n";
+            print $fh "PACKAGE_VER=$version\n";
+            print $fh "ARCH=$bintype\n";
+            print $fh "RAW_ARCH=$btype\n";
+            print $fh "OS=$osname\n";
+            print $fh "DIST_TYPE=$dist_info->{type}\n";
+            print $fh "DIST_DESC=\"$dist_info->{description}\"\n";
+            while(my ($k, $v) = each %$p) {
+                print $fh "PARAM_" . $k . "=$v\n";
+            }
+            for(my $i = $script_start; $i < $script_end; $i++) {
+                chomp $lpm[$i]; # Thanks to T. Nishiyama
+                $lpm[$i] =~ s|\r$||;
+                print $fh "$lpm[$i]\n";
+                # Check if wrong environmental variables are used.
+                while(my ($k, $v) = each %directories_env) {
+                    if($lpm[$i] =~ m|\$$k| || $lpm[$i] =~ m|\$\{$k\}|) {
+                        print STDERR "INFO: environmental variable \$$k is used at line " . ($i + 1) . ", although the use of LPM_* is discouraged in shell/custominstall,\n";
+                        my $expected_variable_name = $k;
+                        $expected_variable_name =~ s|^LPM_(.*)$|$1_DIR|;
+                        print STDERR "      You might want to consider using \$$expected_variable_name instead of \$$k.\n";
+                        print STDERR "      When you have multiple local directories, the former points to the one that appears first in PATH,\n";
+                        print STDERR "      whereas the latter points to the one associated with the executed LPM.\n";
+                        print STDERR "      Let's say you have ~/lcl and ~/gcc47, and ~/lcl/bin/lpm comes first in PATH.\n";
+                        print STDERR "      When you execute ~/gcc47/bin/lpm install foo, \$BIN_DIR points to ~/gcc47/bin,\n";
+                        print STDERR "      though \$LPM_DIR probably points to ~/lcl/bin.\n";
+                    }
+                }
+            }
+            close $fh;
+            if($operator eq 'shell') {
+                unless(do_shell("/bin/sh $script_path", 1)) {
+                    show_build_help(\@lpm);
+                    exit 1;
+                }
+            } else {
+                if($is_first_invocation_of_porg) {
+                    $is_first_invocation_of_porg = 0;
+                    do_shell("$porg_path -p ${package_name}-${version} -l /bin/sh $script_path");
+                } else {
+                    do_shell("$porg_path -p ${package_name}-${version} --append -l /bin/sh $script_path");
+                }
+            }
+            unless($flag_leave_script) {
+                unlink $script_path or print STDERR "WARNING: failed to delete a temporary shell script '$script_path'\n";
+            }
+            if($operator eq 'custominstall') {
+                add_install_log("install", $package_name, $package_url_path);
+            }
+        } elsif($operator eq 'delinilogin') {
+            if($argument eq '') {
+                print STDERR "Cannot delete null package\n";
+                exit 15;
+            }
+            for my $shell_name ( @known_shells ) {
+                delete($init_script_init->{$shell_name}->{$argument});
+                delete($init_script_login->{$shell_name}->{$argument});
+            }
+            # dump($init_script_init);
+            # dump($init_script_login);
+        } elsif($operator eq 'setini' || $operator eq 'setlogin') {
+            if($package_name eq '') {
+                print STDERR "ERROR: package name is not set. Do 'name=xxx' first.\n";
+                exit 14;
+            }
+            my $script_start = $lpm_line + 1;
+            my $script_end   = $script_start;
+            $script_end++ while($script_end < @lpm && $lpm[$script_end] !~ /^\s*EOC\s*$/);
+            unless($script_end < @lpm) { # NOTE: This block is duplicated. Consider refactoring before any modification.
+                print STDERR "ERROR: Premature end of script. EOC is missing.\n";
+                print STDERR "       Check the LPM script if EOC is properly inserted.\n";
+                exit 1;
+            }
+            $lpm_line = $script_end;
+            my $fh;
+            my $header = "#### LPM($local_dir): $package_name";
+            my @blk;
+            push(@blk, $header);
+            for(my $i = $script_start; $i < $script_end; $i++) {
+                chomp $lpm[$i]; # Thanks to T. Nishiyama
+                $lpm[$i] =~ s|\r$||;
+                push(@blk, $lpm[$i]);
+                # Check if wrong environmental variables are used.
+                while(my ($k, $v) = each %directories_env) {
+                    my $must_not_be_used_environmental_variable_name = $k;
+                    next unless($must_not_be_used_environmental_variable_name =~ m|^LPM_(.*)|);
+                    my $env_var_name = "$1_DIR";
+                    if($lpm[$i] =~ m|\$$env_var_name| || $lpm[$i] =~ m|\$\{$env_var_name\}|) {
+                        print STDERR "INFO: environmental variable \$$env_var_name is used at line " . ($i + 1) . ", although it is likely not working in setini.\n";
+                        print STDERR "      When a login script is loaded, LPM_* are defined but *_dir are generally not.\n";
+                        print STDERR "      It is highly likely that you want to use \$$k instead of \$$env_var_name.\n";
+                    }
+                }
+            }
+            for my $shell_name ( @known_shells ) {
+                my @myblk = @blk;
+                for(@myblk){chomp;}
+                if($shell_name =~ m|csh$|i) {
+                    for(@myblk) {
+                        if(m|^(\s*)export\s+(\w+)=(.*)|) {
+                            my $indent = $1;
+                            my $key = $2;
+                            my $value = $3;
+                            if($value =~ m[\$$key|\${$key}]) {
+                                my $svalue = $value;
+                                # This is a special hack for MANPATH. (Thanks to S. Sakuraba)
+                                # Without this hack, when MANPATH is not set (undefined),
+                                # the system-default man pages would not be referenced.
+                                # The system-default man pages are referenced when MANPATH is undefined
+                                # or it has an empty path ''. So, adding an empty path in MANPATH
+                                # avoids this problem.
+                                my $manpath_hack = ($key eq "MANPATH") ? ":" : "";
+                                print "MANPATH_HACK: KEY=\"$key\" VALUE=\"$value\" \"$manpath_hack\"\n" if($debug > 0);
+                                $svalue =~ s|\$\{$key\}:||;
+                                $svalue =~ s/(:|\s+)\$\{$key\}//;
+                                $svalue =~ s|\$$key:||;
+                                $svalue =~ s/(:|\s+)\$$key\b//;
+                                $_ = "${indent}if (\$?$key) then\n" . "${indent}  setenv $key $value\n" . "${indent}else\n" . "${indent}  setenv $key $svalue$manpath_hack\n" . "${indent}endif\n";
+                            } else {
+                                s|^(\s*)export\s+(\w+)=(.*)|$1setenv $2 $3|;
+                            }
+                        }
+                    }
+                }
+                if($operator eq 'setini') {
+                    $init_script_init->{$shell_name}->{$package_name} = \@myblk;
+                } else {
+                    $init_script_login->{$shell_name}->{$package_name} = \@myblk;
+                }
+            }
+            # dump($init_script_init);
+            # dump($init_script_login);
+        } elsif($operator eq 'replaceregexp') {
+            if($build_sub_dir eq '') {
+                print STDERR "NOTE: no build directory was found.\n";
+            } else {
+                chdir $build_sub_dir or die "Cannot chdir to $build_sub_dir";
+            }
+            my $file           = $lpm[++$lpm_line]; chomp $file;
+            my $search_regexp  = $lpm[++$lpm_line]; chomp $search_regexp;
+            my $replace_regexp = $lpm[++$lpm_line]; chomp $replace_regexp;
+            my $cmdline = "perl -pe \"if(" . shell_escape($search_regexp) . "){" . shell_escape($replace_regexp) . "}\" -i " . shell_escape($file);
+            do_shell($cmdline);
+        } elsif($operator eq 'loadstartup') {
+            $init_script_init  = {};
+            $init_script_login = {};
+            load_initial_script_files($init_script_init, $init_script_login);
+            # dump($init_script_init, $init_script_login);
+        } elsif($operator eq 'savestartup') {
+            unless(defined $init_script_login && defined $init_script_init) {
+                print STDERR "Init files are not loaded! To save, we have to load them first.\n";
+                exit 12;
+            }
+            save_initial_script_files($init_script_init, $init_script_login);
+        } elsif($operator eq 'md5') {
+            my $sum = $argument;
+            my $md5sumpath = `which md5sum`; chomp $md5sumpath;
+            unless(-x $md5sumpath) {
+                print STDERR "md5sum is not available. Skipped checking the md5sum.\n";
+            } else {
+                my $real = `$md5sumpath $archive_path`; chomp $real;
+                $real =~ s/\s.*//;
+                if($real ne $sum) {
+                    print STDERR "MD5SUM DID NOT MATCH!\n";
+                    print STDERR " EXPECTED: $sum\n";
+                    print STDERR " ACTUAL  : $real\n";
+                    die;
+                }
+                print STDERR "md5sum OK\n";
+            }
+        } elsif($operator eq 'sha256') {
+            my $sum = $argument;
+            my $sha256sumpath = `which sha256sum`; chomp $sha256sumpath;
+            unless(-x $sha256sumpath) {
+                print STDERR "sha256sum is not available. Skipped checking the sha256sum.\n";
+            } else {
+                my $real = `$sha256sumpath $archive_path`; chomp $real;
+                $real =~ s/\s.*//;
+                if($real ne $sum) {
+                    print STDERR "SHA256SUM DID NOT MATCH!\n";
+                    print STDERR " EXPECTED: $sum\n";
+                    print STDERR " ACTUAL  : $real\n";
+                    die;
+                }
+                print STDERR "sha256sum OK\n";
+            }
+        } else {
+            print STDERR "Unknown command '$operator' at line " . ($lpm_line + 1) . "\n";
+            exit 1;
+        }
+    }
+}
+
+sub is_known_vcs_type
+{
+    my $vcs_type = shift;
+    return 1 if($vcs_type eq 'svn');
+    return 1 if($vcs_type eq 'hg');
+    return 1 if($vcs_type eq 'git');
+    return 0;
+}
+
+sub get_vcs_type_from_url
+{
+    # We accept several types of URLs. Returns undef if it is not VCS-like URL.
+    #   git://foo.example.com/abc      ==> git
+    #   git,http://foo.example.com/abc ==> git
+    #   hg://foo.example.com/abc       ==> hg (mercurial)
+    #   hg,http://foo.example.com/abc  ==> hg (mercurial)
+    #   svn://foo.example.com/abc      ==> svn (subversion)
+    #   svn+ssh://foo.example.com/abc  ==> svn (subversion)
+    my $url = shift;
+    unless($url =~ m|^([^\.]+)://|) {
+        return undef;
+    }
+    my $raw_protocol_type = $1;
+    if($raw_protocol_type =~ m|^(.*?),|) { return $1; }
+    return "svn" if($raw_protocol_type eq 'svn+ssh');
+    return "svn" if($raw_protocol_type eq 'svn');
+    return "git" if($raw_protocol_type eq 'git');
+    return "hg" if($raw_protocol_type eq 'hg');
+    return undef;
+}
+
+sub get_repository_url
+{
+    my $url = shift;
+    $url =~ s|^.*?,||;
+    return $url;
+}
+
+sub get_vcs_executable_path_for_sure
+{
+    my $vcs_type = shift;
+    my $path = `which $vcs_type`; chomp $path;
+    unless(-x $path) {
+        print STDERR "ERROR: Version control system '$vcs_type' is required\n";
+        print STDERR "       to continue the operation. Please also make sure\n";
+        print STDERR "       that $vcs_type is on PATH.\n";
+        exit 15;
+    }
+    return $path;
+}
+
+sub get_vcs_command_by_portable_name
+{
+    my ($cmd, $vcs_type) = @_;
+    if($vcs_type eq 'git') {
+        return 'clone' if($cmd eq 'clone');
+    } elsif($vcs_type eq 'hg') {
+        return 'clone' if($cmd eq 'clone');
+    } elsif($vcs_type eq 'svn') {
+        return 'checkout' if($cmd eq 'clone');
+    }
+    # here you can add commands for another VCS
+    die "I do not know command '$cmd' for VCS type '$vcs_type'";
+}
+
+sub get_repository_version_from_cloned_directory
+{
+    my ($dir, $vcs_type, $vcs_path) = @_;
+    my $save_pwd = getcwd();
+    unless(chdir $dir) {
+        print STDERR "ERROR: could not chdir to '$dir' while determining the version number of the cloned repository.\n";
+        exit 19;
+    }
+    my $ver;
+    if($vcs_type eq 'git') {
+        my @lines = `$vcs_path rev-parse --short HEAD`;
+        if(0 < @lines) {
+            my $l = $lines[0]; chomp $l;
+            $ver = $l;
+        }
+    } elsif($vcs_type eq 'hg') {
+        my @lines = `$vcs_path tip`;
+        if(0 < @lines) {
+            my $l = $lines[0]; chomp $l;
+            if($l =~ m|changeset\s*:\s*\d+:(\S+)|) { $ver = $1; }
+        }
+    } elsif($vcs_type eq 'svn') {
+        my @lines = `$vcs_path info`;
+        for(@lines) {
+            if(m|Last Changed Rev:\s*(\d+)|) { $ver = $1; }
+        }
+    }
+    # here you can add commands for another VCS
+    unless(chdir $save_pwd) {
+        print STDERR "ERROR: could not preserve the current directory. Can you chdir to '$save_pwd'?\n";
+        exit 20;
+    }
+    return $ver;
+}
+
+sub rename_for_sure
+{
+    my ($old, $new) = @_;
+    if(-e $new) {
+        for(my $i = 1; ; $i++) {
+            my $newnewname = "$new.$i";
+            unless(-e $newnewname) {
+                if(rename ($new, $newnewname)) {
+                    last;
+                } else {
+                    print STDERR "ERROR: could not rename '$new' to '$newnewname'.\n";
+                    exit 23;
+                }
+            }
+        }
+    }
+    return rename($old, $new);
+}
+
+sub shell_escape
+{
+    my $s = shift;
+    $s =~ s|(["'\\\$])|\\$1|g;
+    return $s;
+}
+
+sub init_cpan
+{
+    if($flag_root) {
+        print STDERR "ERROR: lpm initcpan does not work in the root mode.\n";
+        exit 1;
+    }
+    $ENV{'FTP_PASSIVE'} = 1;
+    delete $ENV{'PERL_MM_OPT'} if(exists($ENV{'PERL_MM_OPT'}));
+    print STDERR "LPM: Please exit the CPAN shell once you configured the CPAN.\n";
+    print STDERR "LPM: DO NOT INSTALL ANY PERL MODULES NOW, OR YOU CANNOT UNINSTALL THEM IN THE FUTURE.\n";
+    do_shell("perl -MCPAN -eshell");
+    {
+        print STDERR "LPM: \n";
+        print STDERR "LPM: Rewriting CPAN configure file\n";
+        my $my_config = $param_home . "/.cpan/CPAN/MyConfig.pm";
+        my @lpm = (
+            "replaceregexp", $my_config, "m|'make_install_arg'|", "s|q\\[.*\\]|q[]|",
+            "replaceregexp", $my_config, "m|'make_install_make_command'|", "unless(m|porg|){s|q\\[|q[porg -lD make |}",
+            "replaceregexp", $my_config, "m|'mbuild_install_build_command'|", "unless(m|porg|){s|./Build|porg -lD ./Build |}",
+            "replaceregexp", $my_config, "m|'makepl_arg'|", "unless(m|PREFIX|){s|q\\[|q[PREFIX=$local_dir |}");
+        interpret_lpm_script([], @lpm);
+    }
+    print STDERR "LPM: Checking library path\n";
+    my @version_strings = `perl -V`;
+    my $my_version;
+    my $arch_name;
+    for(@version_strings) {
+        if(/revision\s+(\d+)\s+version\s+(\d+)\s+subversion\s+(\d+)/) {
+            $my_version = "$1.$2.$3";
+        }
+        if(/archname=(\S+)/) {
+            $arch_name = $1;
+        }
+    }
+    print STDERR "LPM: Perl version = " . (defined $my_version ? $my_version : "undetected") . "\n";
+    print STDERR "LPM: Arch name    = " . (defined $arch_name  ? $arch_name  : "undetected") . "\n";
+    my $libprefix = "$local_dir/lib/perl5";
+    my @to_add = (
+        "$libprefix/$my_version/$arch_name",
+        "$libprefix/$my_version",
+        "$libprefix/site_perl/$my_version/$arch_name",
+        "$libprefix/site_perl/$my_version",
+        "$local_dir/share/perl5",
+        "$local_dir/lib64/perl5",
+        "$local_dir/lib/perl5"
+    );
+    {
+        my @lpm = (
+            "name=Perl-init",
+            "ver=1.0",
+            "loadstartup",
+            "setini",
+            "export PERL5LIB=" . join(':', @to_add) . ":\$PERL5LIB",
+            "EOC",
+            "savestartup"
+        );
+        interpret_lpm_script([], @lpm);
+    }
+}
+
+sub install_cpan
+{
+    my $module_name = shift;
+    $ENV{'FTP_PASSIVE'} = 1;
+    $ENV{'PERL_AUTOINSTALL'} = '--defaultdeps';
+    delete $ENV{'PERL_MM_OPT'} if(exists($ENV{'PERL_MM_OPT'}));
+    do_shell("perl -MCPAN -e \"install '" . shell_escape($module_name) . "';\"");
+}
+
+sub verify_gpg_signature_and_dearmor
+{
+    my ($install_source, $decrypted_file_name) = @_;
+    if($is_gpg_available) {
+        my $cmd = "gpg --homedir $lpmlib_dir --verify $install_source";
+        print STDERR "\% $cmd\n";
+        system $cmd;
+        if($?) {
+            print STDERR "ERROR: failed to verify the package.\n";
+            print STDERR "       the package is probably contaminated by someone.\n";
+            die;
+        }
+    }
+    my $ifh;
+    my $ofh;
+    open $ifh, "<", $install_source or die;
+    open $ofh, ">", $decrypted_file_name or die "Could not open '${decrypted_file_name}";
+    my $is_in_signed_message = 0;
+    while(<$ifh>) {
+        if($is_in_signed_message) {
+            last if(/^-----BEGIN PGP SIGNATURE-----/);
+            if(/^- (.*)/) {
+                print $ofh "$1\n";
+            } else {
+                print $ofh $_;
+            }
+        } else {
+            $is_in_signed_message = 1 if(/^-----BEGIN PGP SIGNED MESSAGE-----/);
+            my $dummy_for_hash_line = <$ifh>;
+            my $dummy_for_empty_line = <$ifh>;
+        }
+    }
+    close $ofh;
+    close $ifh;
+    return $decrypted_file_name;
+}
+
+sub update_lpm
+{
+    my $update_type = shift;
+    # check lpm in remote repository.
+    my $fh;
+    if(open $fh, "<", $lpm_repo_file) {
+        unless($is_gpg_available) {
+            print STDERR "WARNING: gpg is not available. New LPM will not be verified.\n";
+            print STDERR "         This means that we are not protected from attacks such as\n";
+            print STDERR "         man-in-the-middle attack or DNS poisoning.\n";
+            print STDERR "         If you need the security feature, please install GnuPG.\n";
+        }
+        while(<$fh>) {
+            chomp; chop if(/\r$/);
+            s|#.*||;
+            s|^\s+||;
+            next if(/^$/);
+            my $url            = $update_type eq 'lpmdevel' ? "$_/lpm-devel.asc" : "$_/lpm.asc";
+            my $lpm_asc        = "$lpmlib_dir/lpm.asc";
+            my $lpm_dearmor    = "$lpmlib_dir/lpm.dea";
+            my $lpm_new_script = "$lpmlib_dir/lpm";
+            my $lpm_my_script  = "$bin_dir/lpm";
+            print STDERR "Downloading new lpm from $url to $lpm_asc\n" if($debug > 0);
+            my $result = download_from_url_and_save_to_file($url, $lpm_asc);
+            if($result) {
+                print STDERR "Dearmoring $lpm_asc to $lpm_dearmor\n" if($debug > 0);
+                verify_gpg_signature_and_dearmor($lpm_asc, $lpm_dearmor);
+                print STDERR "Checking $lpm_my_script for the current config.\n" if($debug > 0);
+                my $tfh;
+                open $tfh, "<", $lpm_my_script or die "Cannot open '$lpm_my_script' for input";
+                my $found_config = 0;
+                while(<$tfh>) {
+                    if(m|^\s*###*\s+CONFIG\s+START|i) {
+                        $found_config = 1; last;
+                    }
+                }
+                unless($found_config) {
+                    print STDERR "ERROR: could not find '### CONFIG START ###' in $lpm_my_script\n";
+                    print STDERR "       maybe the script was edited inappropriately?\n";
+                    exit 2;
+                }
+                my $ifh;
+                my $ofh;
+                print STDERR "Writing to $lpm_new_script.\n" if($debug > 0);
+                open $ifh, "<", $lpm_dearmor or die "Cannot open '$lpm_dearmor' for input";
+                open $ofh, ">", $lpm_new_script or die "Cannot open '$lpm_new_script' for output";
+                while(<$ifh>){
+                    if(m|^\s*###*\s+CONFIG\s+START|i) {
+                        print STDERR "CONFIG found.\n" if($debug > 0);
+                        print $ofh "$_";
+                        while(<$tfh>) {
+                            if(m|^\s*###*\s+CONFIG\s+END|i) {
+                                print $ofh "$_";
+                                close $tfh;
+                                last;
+                            } else {
+                                print $ofh "$_";
+                                print STDERR "$_" if($debug > 0);
+                            }
+                        }
+                        while(<$ifh>){
+                            if(m|^\s*###*\s+CONFIG\s+END|i) {
+                                print STDERR "CONFIG end.\n" if($debug > 0);
+                                last;
+                            }
+                        }
+                    } else {
+                        print $ofh "$_";
+                    }
+                }
+                close $ofh;
+                close $ifh;
+                unless(chmod(0755, $lpm_new_script)) {
+                    print STDERR "ERROR: failed to chmod '$lpm_new_script'.\n";
+                    print STDERR "       lpm was not updated.\n";
+                } else {
+                    unless(rename($lpm_new_script, $lpm_my_script)) {
+                        print STDERR "ERROR: failed to overwrite \n";
+                    } else {
+                        print STDERR "Successfully renamed $lpm_new_script to $lpm_my_script.\n" if($debug > 0);
+                    }
+                }
+                return;
+            }
+        }
+        close $fh;
+        print STDERR "LPM is successfully updated.\n";
+    } else {
+        print STDERR "ERROR: '$lpm_repo_file' does not exist. Update failed.\n";
+        print STDERR "       Maybe the repository configuration file was removed by accident?\n";
+        die;
+    }
+}
+
+sub show_installed_packages
+{
+    my $fn = $lpminstalllog;
+    open my $fh, "<", $fn or die "# no packages.";
+    my %package_name_2_url;
+    my $priority = 0;
+    while(<$fh>) {
+        chomp;
+        my ($type, $package_name, $url) = split(/\t/);
+        if($type eq 'install') {
+            $package_name_2_url{$package_name} = [$priority++, $package_name, $url];
+        } elsif($type eq 'uninstall') {
+            delete $package_name_2_url{$package_name};
+        }
+    }
+    close $fh;
+    for my $i (sort values %package_name_2_url) {
+        print "lpm install $i->[2]\n";
+    }
+}
+
+sub get_distribution_info
+{
+    if($^O =~ /darwin/) {
+        my $ver = `sw_vers -productVersion`; chomp $ver;
+        return {type => 'mac',
+                id => 'Apple',
+                description => "MacOS X $ver",
+                version => "$ver"};
+    }
+    my $rv = {};
+    my @l = `lsb_release -a`;
+    for(@l) {
+        if(/^Distributor ID:\s*(.*)/) {
+            $rv->{id} = $1;
+        } elsif(/^Description:\s*(.*)/) {
+            $rv->{description} = $1;
+        } elsif(/^Release:\s*(.*)/) {
+            $rv->{version} = $1;
+        } elsif(/^Codename:\s*(.*)/) {
+            $rv->{codename} = $1;
+        }
+    }
+    # Set inferred data
+    if($rv->{id} eq 'CentOS' || $rv->{id} eq 'RedHatEnterpriseServer' || $rv->{id} eq 'Fedora' || $rv->{id} eq 'Scientific' || $rv->{id} =~ /^Amazon/) {
+        $rv->{type} = 'rhel';
+    } elsif($rv->{id} eq 'SUSE LINUX') {
+        $rv->{type} = 'suse';
+    } elsif($rv->{id} eq 'Ubuntu') {
+        $rv->{type} = 'ubuntu';
+    } elsif($rv->{id} eq 'Debian') {
+        $rv->{type} = 'debian';
+    }
+    return $rv;
+}
+
+sub freeze_package
+{
+    my $package_name = shift;
+    my $return_before_overwriting = shift;
+    unless(defined $package_name) {
+        print STDERR "usage: lpm freeze <package name>\n";
+        print STDERR "e.g.) lpm freeze foo\n";
+        print STDERR "e.g.) lpm freeze foo-1.2.1\n";
+        exit 0;
+    }
+    my @packages = `$porg_path -a`; for(@packages) { chomp }
+    my @filtered_packages = grep { /^$package_name(-.*)?$/ } @packages;
+    if(@filtered_packages == 0) {
+        print STDERR "ERROR: no such packages '$package_name'.\n";
+        exit 1;
+    }
+    if(1 < @filtered_packages) {
+        print STDERR "ERROR: multiple packages hit the name. The candidates are:\n";
+        print STDERR "\t$_\n" for(@filtered_packages);
+        exit 1;
+    }
+    my @files = `$porg_path -f $filtered_packages[0]`; for(@files) { chomp }
+    if($?) {
+        print STDERR "ERROR: cannot execute $porg_path with -f option.\n";
+        exit 1;
+    }
+    my $package_with_ver = shift @files; chop $package_with_ver;
+    for(@files) { s|^$local_dir/||; }
+    if(0 < $debug) {
+        print "PACKAGE: $package_with_ver\n";
+        print "\t$_\n" for(@files);
+    }
+    my $binary_tar_ball_path = "$lpmlib_dir/$package_with_ver.binary.tar.gz";
+    if(-e $binary_tar_ball_path) {
+        return 0 if($return_before_overwriting);
+        if($flag_force) {
+            print STDERR "INFO: $binary_tar_ball_path already exists, but you specified --force so we'll proceed.\n";
+        } else {
+            print STDERR "ERROR: $binary_tar_ball_path already exists.\n";
+            print STDERR "       If you wish to overwrite it, please add --force option.\n";
+            exit 1;
+        }
+    }
+    my ($fh, $temp_file) = File::Temp::tempfile(SUFFIX => '.files');
+    my @deepfreeze_directories;
+    for my $fn (@files) {
+        my $f = $fn; # create a copy
+        if($f =~ s|/\.lpm_save_under_this_dir$|/|) {
+            push(@deepfreeze_directories, $f);
+        }
+    }
+    FILELOOP: for my $f (@files) {
+        for(@deepfreeze_directories) {
+            next FILELOOP if($f =~ m|^$_|);
+        }
+        print $fh "$f\n";
+    }
+    DEEPFREEZE_LOOP: for my $f (@deepfreeze_directories) {
+        for(@deepfreeze_directories) {
+            next if($_ eq $f);
+            next DEEPFREEZE_LOOP if($f =~ m|^$_|);
+        }
+        print $fh "$f\n";
+    }
+    close $fh;
+    my $cmd = "$tar_path cvz -T $temp_file -f $binary_tar_ball_path";
+    chdir $local_dir or die "Cannot chdir to $local_dir";
+    do_shell($cmd);
+    unless($flag_leave_script) { unlink $temp_file; }
+    return 1;
+}
+
+sub show_fridge
+{
+    my $package_name = shift;
+    my @files = <$lpmlib_dir/*.binary.tar.gz>;
+    for(@files) {
+        s|.*/||;
+        s|\.binary\.tar\.gz$||;
+        print "$_\n" if(!defined $package_name || m|$package_name|);
+    }
+}
+
+sub thaw_package
+{
+    my $package_name = shift;
+    unless(defined $package_name) {
+        print STDERR "usage: lpm thaw <package name>\n";
+        print STDERR "e.g.) lpm thaw foo-1.2.3\n";
+        exit 1;
+    }
+    unless($flag_force) {
+        my @pkgs = get_matching_porg_packages_already_installed($package_name);
+        if(0 < @pkgs) {
+            print STDERR "ERROR: $package_name is already installed.\n";
+            print STDERR "       You can add --force to ignore the error.\n";
+            print STDERR "       Here are the matched package(s).\n";
+            for(@pkgs) { print STDERR "\t$_\n"; }
+            exit 1;
+        }
+    }
+    my @files = <$lpmlib_dir/*.binary.tar.gz>;
+    my $matched_package_path;
+    my $matched_package_name;
+    {
+        my @f = @files;
+        my @matched_packages;
+        for(@f) {
+            my $orig = $_;
+            s|.*/||; s|\.binary\.tar\.gz$||;
+            if(m|$package_name|) {
+                push(@matched_packages, $_);
+                $matched_package_path = $orig;
+                $matched_package_name = $_;
+            }
+        }
+        if(@matched_packages == 0) {
+            print STDERR "ERROR: no such package '$package_name'\n";
+            exit 1;
+        }
+        if(1 < @matched_packages) {
+            print STDERR "ERROR: there are multiple candidates:\n";
+            for(@matched_packages) { print STDERR "\t$_\n"; }
+            exit 2;
+        }
+    }
+    chdir $local_dir or die "Cannot chdir to $local_dir";
+    my $cmd = "$porg_path -lp $matched_package_name $tar_path xvfz $matched_package_path";
+    do_shell($cmd);
+    {
+        my @f = get_matching_porg_packages_already_installed($matched_package_name);
+        if(@f == 1) {
+            print "Successfully thawed $matched_package_name\n";
+        }
+    }
+}
+
+sub get_matching_porg_packages_already_installed
+{
+    my $package_name = shift;
+    my $name = shell_escape($package_name);
+    my @porg_result;
+    if($porg_path =~ /paco/) {
+        @porg_result = `$porg_path -1 $name`; # for backward compatibility to older versions
+    } else {
+        @porg_result = `$porg_path $name`;
+    }
+    if($? < 0 || ($? & 255) != 0) {
+        print STDERR "ERROR: could not execute $porg_path\n";
+        exit 3;
+    }
+    for(@porg_result) { chomp; }
+    return @porg_result;
+}
+
+sub simplify_btype
+{
+    my $btype = shift;
+    if($btype eq 'x86_64') { return $btype; }
+    return 'x86';
+}
+
+sub horizontal_bar {
+    print "*"x115, "\n";
+}
+
+sub fix_ld_library_glitch {
+    my @file_names = @_;
+    for my $file_name (@file_names) {
+        print "Processing '$file_name' ...\n";
+        unless(-e $file_name) {
+            print STDERR "ERROR: '$file_name' does not exist.\n";
+            exit 1;
+        }
+        my $new_file_name = "$file_name.new.$$";
+        if(-e $new_file_name) {
+            print STDERR "ERROR: a temporary file '$new_file_name' already exists.\n";
+            print STDERR "       abort for safety. You need to remove it first.\n";
+            exit 1;
+        }
+        my $backup_file_name = "$file_name.orig.$$";
+        if(-e $backup_file_name) {
+            print STDERR "ERROR: a backup file '$backup_file_name' already exists.\n";
+            print STDERR "       abort for safety. You need to remove it first.\n";
+            exit 1;
+        }
+        my $has_a_problem_during_transformation = 0;
+        open my $ifh, "<", $file_name or die "Cannot open '$file_name' for input";
+        open my $ofh, ">", $new_file_name or die "Cannot open '$new_file_name' for output";
+        LINELOOP: while(<$ifh>) {
+            chomp;
+            my $original_line = $_;
+            my $has_transformed_this_line = 0;
+            s|#.*$||;
+            if(/LD_LIBRARY_PATH\s*\=/) {
+                my $f = $_;
+                while($f =~ s!\$({.*?}|LD_LIBRARY_PATH)!!) {}
+                print "    ORIGINAL : $_\n    EMPTY EXP: $f\n" if($debug > 2);
+                # Note that the regexp in the next line is replicated in check_ld_library_path_security_problem_and_exit_if_it_exists().
+                if($f =~ m!(\:\:|=\:|\:\s*"?\s*($|;))!) {
+                    # Note that the regexp in the next line is replicated in check_ld_library_path_security_problem_and_exit_if_it_exists().
+                    unless(/^\s*(export\s+)?LD_LIBRARY_PATH\s*=\s*(\S+)\s*$/) {
+                        $has_a_problem_during_transformation = 1;
+                        print STDERR "ERROR: it looks too complex at line $. (shown below).\n";
+                        print STDERR "$original_line\n";
+                        last LINELOOP;
+                    }
+                    my $new_line = $original_line;
+                    # Note that the regexps in the following two lines are replicated in check_ld_library_path_security_problem_and_exit_if_it_exists().
+                    $new_line =~ s!=\s*\$(LD_LIBRARY_PATH|\{LD_LIBRARY_PATH\}):!=\$\{LD_LIBRARY_PATH:+\$LD_LIBRARY_PATH:\}!g;
+                    $new_line =~ s!:\$(LD_LIBRARY_PATH|\{LD_LIBRARY_PATH\})(\s*;|\b)!\$\{LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH\}$2!g;
+                    if($new_line eq $original_line) {
+                        $has_a_problem_during_transformation = 1;
+                        print STDERR "ERROR: it looks too complex at line $. (shown below).\n";
+                        print STDERR "$original_line\n";
+                        last LINELOOP;
+                    }
+                    print $ofh "$new_line\n";
+                    $has_transformed_this_line = 1;
+                }
+            }
+            unless($has_transformed_this_line) {
+                print $ofh "$original_line\n";
+            }
+        }
+        close $ofh;
+        close $ifh;
+        if($has_a_problem_during_transformation) {
+            print STDERR "ERROR: automatic fix did not work.\n";
+            unlink $new_file_name;
+            exit 1;
+        }
+        unless(rename $file_name, $backup_file_name) {
+            print STDERR "ERROR: rename from '$file_name' to '$backup_file_name' failed.\n";
+            print STDERR "       a temporary file '$new_file_name' remained.\n";
+            exit 1;
+        }
+        unless(rename $new_file_name, $file_name) {
+            print STDERR "ERROR: rename from '$new_file_name' to '$file_name' failed.\n";
+            print STDERR "       The original file, '$file_name', was renamed to '$backup_file_name',\n";
+            print STDERR "       so you should rename it back if needed.\n";
+            exit 1;
+        }
+        print STDERR "NOTE: Successfully fixed the problem.\n";
+        print STDERR "      The original file is saved as '$backup_file_name'.\n";
+    }
+}
+
+sub check_ld_library_path_security_problem_and_exit_if_it_exists {
+    # If the platform is Mac OS X, we do not care because Mac OS X does not look LD_LIBRARY_PATH.
+    return if($^O =~ /darwin/);
+    # Here we assume that the platform is Linux, not Mac OS X.
+    # If LD_LIBRARY_PATH is not set, the problem does not exist.
+    return unless(defined $ENV{'LD_LIBRARY_PATH'});
+    # If LD_LIBRARY_PATH is empty and the platform is Linux (not Mac OS X), the problem does not exist.
+    return if($ENV{'LD_LIBRARY_PATH'} eq '');
+    # The following two lines check if LD_LIBRARY_PATH contains
+    # an empty path. Note that the third argument of split is very important;
+    # split(/:/, '/bin:') returns ('/bin'), not ('/bin', '').
+    my @v = split(/:/, $ENV{'LD_LIBRARY_PATH'}, -1);
+    return unless(0 < grep { $_ eq '' } @v);
+    # Here we know that we have the security problem, so we warn and show how to fix it.
+    horizontal_bar();
+    print "ERROR: Your LD_LIBRARY_PATH (an environmental variable) contains an empty path,\n";
+    print "       which is a SERIOUS SECURITY ISSUE; unpriviledged users may execute\n";
+    print "       arbitrary code with your account!\n";
+    print "       YOUR DATA MAY BE (or \"has already been\", at worst) DAMAGED, LOST, or\n";
+    print "       STOLEN. YOUR ACCOUNT MAY BE (or \"has already been\", at worst) COMPROMISED.\n";
+    print "       FIX THE PROBLEM IMMEDIATELY.\n";
+    horizontal_bar();
+    print "DESCRIPTION: Older versions of LPM creates and uses a bad piece of shell scripts,\n";
+    print "       which led to the serious security hole. Later versions of LPM do not have\n";
+    print "       the problem, but previously generated scripts need to be fixed manually.\n";
+    print "       If you did 'lpm initlocaldir' with LPM 1.59 or before, fix scripts\n";
+    print "       according to what we explain in 'ACTION' section below. You may see this\n";
+    print "       error message if you did the same mistake as the author of LPM.\n";
+    print "PROBLEM: Having an ampty path in LD_LIBRARY_PATH gives attackers a chance to\n";
+    print "       force you run a malicious program. See the sites below for details.\n\n";
+    print "           1) How to add a directory to LD_LIBRARY_PATH safely:\n";
+    print "               http://stick.gk2.sk/2009/10/wrong-usage-of-ld_library_path/\n";
+    print "           2) CVE-2012-0883, a bug in Apache HTTP Server before 2.4.2, is\n";
+    print "              essentially the same bug:\n";
+    print "               http://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2012-0883\n";
+    horizontal_bar();
+    print "ACTION 1) NEVER 'cd' (CHANGE DIRECTORY) to ANY DIRECTORIES IN WHICH UNTRUSTED\n";
+    print "          USERS CAN CREATE FILES. For example, NEVER do 'cd /tmp'.\n";
+    print "       2) Modify the problematic scripts listed below. You may have to modify\n";
+    print "          other files as well if you have ever set LD_LIBRARY_PATH for yourself.\n";
+    print "       3) Relogin.\n";
+    horizontal_bar();
+    # %local_dirs :: String@absolute_path_of_local_dir -> Int@dir_status (dir_status 0 -> inactive, 1 -> active)   NOTE: we don't need the dir_status here.
+    my %local_dirs = get_startup_script_status();
+    $local_dirs{$param_home} = 1; # NOTE: We put '~/' as well. We'll look into files such as '~/.bash_profile' as well as '~/lcl/.bash_profile' because they might cause a problem (though it isn't a fault of LPM, don't you think it's better to pick it up if there's any problem, huh?).
+    # Set the following variable to true when we find any file with any problematic assignment to LD_LIBRARY_PATH (of known patterns).
+    my $is_any_file_problematic = 0;
+    # Push the paths of problematic files that can be fixed automatically.
+    my @path_of_files_to_be_auto_fixed = ();
+    for my $local_dir (sort (keys %local_dirs)) { # Technically, sort isn't necessary, but the list looks better with sort.
+        # What we do here is 'sort | uniq' of the paths of the start-up scripts. Note that files such as '~/.login' will be processed more than once if we skip this.
+        my %target_files = ();
+        for my $file (values %$shellname_to_interactiveinitfile) {
+            next if($file =~ /^\.t?cshrc/); # csh and tcsh don't have the problem, so we skip them.
+            $target_files{"$local_dir/$file"}++;
+        }
+        for my $file (values %$shellname_to_logininitfile) {
+            $target_files{"$local_dir/$file"}++;
+        }
+        # Let's look into each startup file.
+        for my $file (sort (keys %target_files)) {
+            my $has_shown_file_name = 0;
+            my $is_unable_to_autofix = 0;
+            my $fh;
+            unless(open $fh, "<", $file) {
+                print STDERR "NOTE: '$file' was not found. We skip it.\n";
+                next;
+            }
+            LINELOOP: while(<$fh>) {
+                chomp;
+                s|#.*$||; # remove comments
+                next unless(/LD_LIBRARY_PATH\s*\=/); # skip if it doesn't look like an assignment
+                {
+                    # This code block checks if the assignment operation to LD_LIBRARY_PATH may result in a problematic value.
+                    # '$LD_LIBRARY_PATH' and '${ ... }' are substituted with an empty string, after which we see if the result
+                    # cantains '=:' (eg, LD_LIBRARY_PATH=:/bin:/usr/bin), '::' (eg, LD_LIBRARY_PATH=/bin::/usr/bin), or
+                    # ':(end of line)' (eg, LD_LIBRARY_PATH=/bin:/usr/bin:). Note that this code may find a lot of false positives
+                    # but is designed to find almost all (realistic) problematic cases.
+                    my $f = $_;
+                    while($f =~ s!\$({.*?}|LD_LIBRARY_PATH)!!) {}
+                    print "    ORIGINAL : $_\n    EMPTY EXP: $f\n" if($debug > 2);
+                    # Note that the regexp below is replicated in fix_ld_library_glitch().
+                    next LINELOOP unless($f =~ m!(\:\:|=\:|\:\s*"?\s*($|;))!);
+                }
+                print "    PROBLEMATIC ASSIGNMENT FOUND.\n" if($debug > 2);
+                $is_any_file_problematic = 1;
+                unless($has_shown_file_name) { # show the file name for the first time.
+                    print "In file $file\n";
+                    $has_shown_file_name = 1;
+                }
+                print "  at line $.:\n";
+                print "    $_\n";
+                # Note that the regexp below is replicated in fix_ld_library_glitch().
+                if(/^\s*(export\s+)?LD_LIBRARY_PATH\s*=\s*(\S+)\s*$/) {
+                    print "  should be modified to the following:\n";
+                } else {
+                    print "  should be modified but we are not sure how to fix it. Our best guess is:\n";
+                    $is_unable_to_autofix = 1;
+                }
+                my $old_line = $_;
+                # Before: LD_LIBRARY_PATH=$LD_LIBRARY_PATH:(something)
+                # After:  LD_LIBRARY_PATH=${LD_LIBRARY_PATH:+$LD_LIBRARY_PATH:}(something)
+                # Before: LD_LIBRARY_PATH=${LD_LIBRARY_PATH}:(something)
+                # After:  LD_LIBRARY_PATH=${LD_LIBRARY_PATH:+$LD_LIBRARY_PATH:}(something)
+                # The following line handles the two cases presented above. Note that the regexp is replicated in fix_ld_library_glitch().
+                s!=\s*\$(LD_LIBRARY_PATH|\{LD_LIBRARY_PATH\}):!=\$\{LD_LIBRARY_PATH:+\$LD_LIBRARY_PATH:\}!g;
+                # Before: LD_LIBRARY_PATH=(something):$LD_LIBRARY_PATH
+                # After:  LD_LIBRARY_PATH=(something)${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+                # Before: LD_LIBRARY_PATH=(something):${LD_LIBRARY_PATH}
+                # After:  LD_LIBRARY_PATH=(something)${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+                # The following line handles the two cases presented above. Note that the regexp is replicated in fix_ld_library_glitch().
+                s!:\$(LD_LIBRARY_PATH|\{LD_LIBRARY_PATH\})(\s*;|\b)!\$\{LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH\}$2!g;
+                my $did_not_match_with_neither = $_ eq $old_line;
+                if($did_not_match_with_neither) {
+                    print "    (failed to analyze because it is too complex)\n";
+                } else {
+                    print "    $_\n";
+                }
+            }
+            close $fh;
+            push(@path_of_files_to_be_auto_fixed, $file) if($has_shown_file_name && !$is_unable_to_autofix);
+        }
+    }
+    if(0 < @path_of_files_to_be_auto_fixed) {
+        print "You can fix the problem by the following command (without '\$', which is a prompt):\n";
+        print "  \$ lpm fix_ld_library_path ", join(' ', @path_of_files_to_be_auto_fixed), "\n";
+    }
+    horizontal_bar();
+    if($is_any_file_problematic) {
+        # Print it in red. I wish to use Term::ANSIColor but hard-coded it to avoid depencency to a non-standard module.
+        print "\e[31;1mERROR: SECURITY PROBLEM. READ THE MESSAGES ABOVE CAREFULLY.\e[0m\n";
+    } else {
+        print "NOTE: Did you relogin after fixing startup scripts? If not, please relogin.\n";
+        print "ERROR: We could not detect any problem in shell start-up scripts,\n";
+        print "       but still LD_LIBRARY_PATH contains an empty path, which means.\n";
+        print "       the security problem is not yet fixed.\n\n";
+        print "       It is very likely that either you or an administrator set\n";
+        print "       LD_LIBRARY_PATH inappropriately. Ask the administrator.\n";
+        print "       If you are the administrator and have no idea how to solve it,\n";
+        print "       ask in the LPM users mailing list.\n";
+    }
+    exit 1;
+}
+
+sub manual_install_package
+{
+    my $argvs = shift;
+    my $cmdline = "$porg_path ";
+    if(defined $param_packagename) {
+        $cmdline .= "-p $param_packagename";
+    } else {
+        $cmdline .= "-D";
+    }
+    $cmdline .= " -l " . join(' ', @{$argvs});
+    do_shell($cmdline);
+    # manualinstall is useless because it is not reproducible as a shell command.
+    # add_install_log("manualinstall", $package_name, $package_url_path);
+}
+
+__END__
+
+=head1 NAME
+
+lpm - Local Package Manager
+
+=head1 SYNOPSIS
+
+lpm E<lt>subcommandE<gt> [options...] [arguments...]
+
+=head1 SUBCOMMANDS
+
+=over 8
+
+=item B<lpm help>
+
+'lpm help' shows how to invoke LPM subcommands.
+'lpm help <subcmd>' shows how to use an LPM subcommand. For example, 'lpm help list' shows how to use 'lpm list' subcommand.
+
+=back
+
+=head1 LICENSE
+
+B<lpm> is distributed under the 2-clause BSD license (http://opensource.org/licenses/BSD-2-Clause).
+
+=head1 AUTHOR
+
+Masahiro Kasahara <masahiro kasahara.ws>
+
+You see "at" in the space above.
+
+=cut
