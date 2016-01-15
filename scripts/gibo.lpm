@@ -1,0 +1,11 @@
+#
+# Description: gibo
+#
+
+source=git,https://github.com/simonwhitaker/gibo.git
+download
+
+custominstall
+cp $LPM_BUILD/gibo-source/gibo $LPM_BIN/gibo
+$LPM_BIN/gibo -u
+EOC
