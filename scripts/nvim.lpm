@@ -1,0 +1,19 @@
+
+# # Description: zsh
+#
+
+# source URL. It specifies where to download from.
+source=git,https://github.com/neovim/neovim.git
+
+# package name and version. You can omit it when it can be inferred from the source URL.
+#name=
+#ver=
+
+# download the package
+download
+
+custominstall
+rm -r build/
+make CMAKE_EXTRA_FLAGS="-DCMAKE_INSTALL_PREFIX=$LPM_LOCAL"
+make install
+EOC

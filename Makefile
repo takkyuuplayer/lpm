@@ -8,6 +8,8 @@ install:
 build-essential:
 	carton exec -- perl lpm install scripts/libevent.lpm
 	carton exec -- perl lpm install scripts/ncurses.lpm
+	carton exec -- perl lpm install https://cmake.org/files/v3.7/cmake-3.7.1.tar.gz
+	carton exec -- perl lpm install http://ftpmirror.gnu.org/libtool/libtool-2.4.6.tar.gz
 	@echo "run 'source <(make compiler-envs)' to let compiler to refer local lib directory."
 
 compiler-envs:

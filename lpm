@@ -2620,7 +2620,7 @@ sub get_vcs_command_by_portable_name
 {
     my ($cmd, $vcs_type) = @_;
     if($vcs_type eq 'git') {
-        return 'clone' if($cmd eq 'clone');
+        return 'clone --depth 1' if($cmd eq 'clone');
     } elsif($vcs_type eq 'hg') {
         return 'clone' if($cmd eq 'clone');
     } elsif($vcs_type eq 'svn') {
