@@ -3,7 +3,7 @@
 #
 
 # source URL. It specifies where to download from.
-source=http://ftp.gnu.org/pub/gnu/ncurses/ncurses-5.9.tar.gz
+source=http://ftp.gnu.org/pub/gnu/ncurses/ncurses-6.0.tar.gz
 
 # package name and version. You can omit it when it can be inferred from the source URL.
 #name=
