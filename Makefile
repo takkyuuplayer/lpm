@@ -8,7 +8,7 @@ install:
 build-essential:
 	carton exec -- perl lpm install scripts/libevent.lpm
 	carton exec -- perl lpm install scripts/ncurses.lpm
-	@echo run "source <(make compiler-envs)" to let compiler to refer local lib directory.
+	@echo "run 'source <(make compiler-envs)' to let compiler to refer local lib directory."
 
 compiler-envs:
 	@echo export LDFLAGS='-L${LPM_LIB} ${LDFLAGS}'
