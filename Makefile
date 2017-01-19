@@ -27,6 +27,8 @@ brew:
 	@echo 'ruby -e "$$(curl -fsSL https://raw.githubusercontent.com/Linuxbrew/install/master/install)"' >hoge.sh
 	which brew || ${SHELL} ./hoge.sh
 	@rm ./hoge.sh
+	brew bundle
+	brew upgrade
 
 brew_dump:
 	rm -rf Brewfile
