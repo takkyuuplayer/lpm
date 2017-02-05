@@ -1,3 +1,7 @@
 tap 'homebrew/bundle'
+tap 'homebrew/dupes'
 tap 'homebrew/core'
 brew 'ack'
+brew 'pkg-config'
+brew 'vim'
+brew 'homebrew/dupes/ncurses'
