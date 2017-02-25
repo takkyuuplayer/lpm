@@ -24,9 +24,9 @@ help:
 	@cat Makefile
 
 brew:
-	@echo 'ruby -e "$$(curl -fsSL https://raw.githubusercontent.com/Linuxbrew/install/master/install)"' >hoge.sh
-	which brew || ${SHELL} ./hoge.sh
-	@rm ./hoge.sh
+	@echo 'ruby -e "$$(curl -fsSL https://raw.githubusercontent.com/Linuxbrew/install/master/install)"' >/tmp/brew.sh
+	which brew || ${SHELL} /tmp/brew.sh
+	@rm /tmp/brew.sh
 	brew bundle
 	brew upgrade
 
